@@ -1,0 +1,29 @@
+name: Build Anomaly NTE Vehicle Host (clean patch)
+
+on:
+  push:
+    branches:
+      - feature/nte-vehicle-anomaly-host
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply NTE Vehicle host patch
+        shell: bash
+        run: |
+          grep -v '^diff -ruN ' .patches/nte-vehicle-0.6.0.patch > .patches/nte-vehicle-clean.patch
+          printf '\n' >> .patches/nte-vehicle-clean.patch
+          patch -p1 --dry-run < .patches/nte-vehicle-clean.patch
+          patch -p1 < .patches/nte-vehicle-clean.patch
+      - name: Build Anomaly
+        shell: cmd
+        run: build.cmd package
+      - name: Upload runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anomaly-NTE-Vehicle-Host-windows-x64
+          path: .build/windows-vs2022/game-package/**
+          if-no-files-found: error
+          compression-level: 6
