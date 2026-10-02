@@ -1,6 +1,6 @@
 diff --git a/include/anomaly/sdk/services/nte.h b/include/anomaly/sdk/services/nte.h
---- a/include/anomaly/sdk/services/nte.h
-+++ b/include/anomaly/sdk/services/nte.h
+--- a//include/anomaly/sdk/services/nte.h
++++ b/k/include/anomaly/sdk/services/nte.h
 @@ -32,6 +32,8 @@
  #define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION 1u
  #define ANOMALY_NTE_PICKUP_SERVICE_V1_ID "anomaly.nte.pickup"
@@ -61,8 +61,8 @@ diff --git a/include/anomaly/sdk/services/nte.h b/include/anomaly/sdk/services/n
  // active Game callback domain; it never exposes UE object pointers, reflected functions, or
  // Profile offsets. Confirmation is reported independently from the interaction trigger.
 diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
---- a/src/game/ue5/ue5_nte_adapter.cpp
-+++ b/src/game/ue5/ue5_nte_adapter.cpp
+--- a//src/game/ue5/ue5_nte_adapter.cpp
++++ b/k/src/game/ue5/ue5_nte_adapter.cpp
 @@ -739,6 +739,29 @@
          bool cooldown_layout_valid{};
          bool combat_event_bindings_attempted{};
@@ -511,8 +511,8 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
          !PublishIfMissing(
              ANOMALY_NTE_ENTITIES_SERVICE_V1_ID,
 diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capability_policy.cpp
---- a/src/plugin/plugin_capability_policy.cpp
-+++ b/src/plugin/plugin_capability_policy.cpp
+--- a//src/plugin/plugin_capability_policy.cpp
++++ b/k/src/plugin/plugin_capability_policy.cpp
 @@ -11,7 +11,7 @@
      std::string_view capability;
  };
@@ -547,3 +547,4 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      {"anomaly.nte.pickup", "nte-pickup"},
      {"anomaly.nte.ui-buttons", "nte-ui-buttons"},
      {"anomaly.nte.entities", "nte-entity-snapshot"},
+\ No newline at end of file
