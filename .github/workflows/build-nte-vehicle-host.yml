@@ -1,0 +1,39 @@
+name: Build Anomaly NTE Vehicle Host
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply NTE Vehicle host patch
+        shell: pwsh
+        run: |
+          git apply --check --whitespace=nowarn .patches/nte-vehicle-0.6.0.patch
+          git apply --whitespace=nowarn .patches/nte-vehicle-0.6.0.patch
+
+      - name: Configure and build Anomaly
+        shell: cmd
+        run: build.cmd package
+
+      - name: Verify vehicle integration
+        shell: pwsh
+        run: |
+          $root = ".build/windows-vs2022/game-package"
+          if (-not (Test-Path $root)) { throw "Game package was not produced." }
+          $bins = Get-ChildItem $root -Recurse -File -Include *.exe,*.dll
+          if ($bins.Count -eq 0) { throw "No runtime binaries were produced." }
+          Write-Host "Produced binaries:"
+          $bins | Select-Object FullName,Length | Format-Table -AutoSize
+
+      - name: Upload Anomaly runtime package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anomaly-NTE-Vehicle-Host-windows-x64
+          path: .build/windows-vs2022/game-package/**
+          if-no-files-found: error
+          compression-level: 6
