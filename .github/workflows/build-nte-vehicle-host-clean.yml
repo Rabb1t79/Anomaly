@@ -13,10 +13,9 @@ jobs:
       - name: Apply NTE Vehicle host patch
         shell: bash
         run: |
-          grep -v '^diff -ruN ' .patches/nte-vehicle-0.6.0.patch > .patches/nte-vehicle-clean.patch
-          printf '\n' >> .patches/nte-vehicle-clean.patch
-          patch -p1 --dry-run < .patches/nte-vehicle-clean.patch
-          patch -p1 < .patches/nte-vehicle-clean.patch
+          sed -e '/^diff -ruN /d' -e 's#^--- anomaly_orig/#--- a/#' -e 's#^+++ anomaly_work/#+++ b/#' .patches/nte-vehicle-0.6.0.patch > .patches/nte-vehicle-clean.patch
+          git apply --check --whitespace=nowarn .patches/nte-vehicle-clean.patch
+          git apply --whitespace=nowarn .patches/nte-vehicle-clean.patch
       - name: Build Anomaly
         shell: cmd
         run: build.cmd package
