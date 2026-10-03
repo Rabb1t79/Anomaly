@@ -27,3 +27,5 @@ jobs:
           compression-level: 6
 
 # patch-normalized
+
+# newline-marker-fix
