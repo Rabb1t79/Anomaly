@@ -10,7 +10,7 @@ diff --git a/include/anomaly/sdk/services/nte.h b/include/anomaly/sdk/services/n
  #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID "anomaly.nte.ui-buttons"
  #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION 1u
  #define ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES 128u
-@@ -291,6 +293,49 @@
+@@ -291,7 +293,50 @@
      AnomalyStatusV1 (ANOMALY_CALL *stop_movement)(void* user);
  } AnomalyNteNavigationServiceV1;
  
@@ -63,7 +63,7 @@ diff --git a/include/anomaly/sdk/services/nte.h b/include/anomaly/sdk/services/n
 diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 --- a/src/game/ue5/ue5_nte_adapter.cpp
 +++ b/src/game/ue5/ue5_nte_adapter.cpp
-@@ -739,6 +739,26 @@
+@@ -739,6 +739,31 @@
          bool cooldown_layout_valid{};
          bool combat_event_bindings_attempted{};
      } combat_skill_discovery;
@@ -91,12 +91,11 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +    bool vehicle_valid{};
 +    std::vector<std::string> vehicle_ids;
 +    std::string selected_vehicle_id;
-+    std::string selected_vehicle_id;
 +
      static constexpr std::size_t kDamageEventCapacity = 512;
      static constexpr std::uint64_t kDamageSourceBase = 0x8000000000000000ULL;
      struct DamageRecord {
-@@ -1575,6 +1598,16 @@
+@@ -1575,6 +1598,22 @@
              "cameraManager.fov"});
      }
  
@@ -165,7 +164,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
          info = std::move(candidate);
          return true;
      }
-@@ -7322,6 +7370,377 @@
+@@ -7322,6 +7370,383 @@
          return true;
      }
  
@@ -549,7 +548,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
      [[nodiscard]] bool BuildNteFunctionBindingLocked(
          const std::uintptr_t function,
          const NteFunctionKind kind,
-@@ -12481,6 +12802,4 @@
+@@ -12481,6 +12802,10 @@
              sizeof(AnomalyNteNavigationServiceV1),
              ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
              this, MoveToLocationThunk, StopMovementThunk};
@@ -568,7 +567,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
      AnomalyNtePickupServiceV1 pickup_service{};
      AnomalyNteUiButtonsServiceV1 ui_buttons_service{};
      AnomalyNteEntitiesServiceV1 entities_service{};
-@@ -12802,6 +13128,45 @@
+@@ -12802,6 +13128,51 @@
          return lease ? State::MapLandmarkTeleport(lease.User(), request) : StoppedStatus();
      }
  
@@ -620,7 +619,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
      static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
          void* user,
          const double destination[3]) noexcept {
-@@ -14013,6 +14367,13 @@
+@@ -14013,7 +14367,14 @@
              semantic_lifetime)) {
          return false;
      }
@@ -663,7 +662,7 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      {"anomaly.plugin-state", "configuration"},
      {"anomaly.config", "configuration"},
      {"anomaly.storage", "storage"},
-@@ -95,6 +96,7 @@
+@@ -95,12 +96,14 @@
      {"anomaly.nte.player-hold", "nte-player-hold"},
      {"anomaly.nte.map-landmarks", "nte-map-landmarks"},
      {"anomaly.nte.navigation", "nte-navigation"},
@@ -717,7 +716,7 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
          info = std::move(candidate);
          return true;
      }
-@@ -7322,6 +7370,377 @@
+@@ -7322,6 +7370,383 @@
          return true;
      }
  
@@ -1101,7 +1100,7 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      [[nodiscard]] bool BuildNteFunctionBindingLocked(
          const std::uintptr_t function,
          const NteFunctionKind kind,
-@@ -12481,6 +12802,4 @@
+@@ -12481,6 +12802,10 @@
              sizeof(AnomalyNteNavigationServiceV1),
              ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
              this, MoveToLocationThunk, StopMovementThunk};
@@ -1120,7 +1119,7 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      AnomalyNtePickupServiceV1 pickup_service{};
      AnomalyNteUiButtonsServiceV1 ui_buttons_service{};
      AnomalyNteEntitiesServiceV1 entities_service{};
-@@ -12802,6 +13128,45 @@
+@@ -12802,6 +13128,51 @@
          return lease ? State::MapLandmarkTeleport(lease.User(), request) : StoppedStatus();
      }
  
@@ -1172,7 +1171,7 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
          void* user,
          const double destination[3]) noexcept {
-@@ -14013,6 +14367,13 @@
+@@ -14013,7 +14367,14 @@
              semantic_lifetime)) {
          return false;
      }
