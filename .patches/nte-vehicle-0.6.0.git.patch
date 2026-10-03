@@ -662,7 +662,7 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      {"anomaly.plugin-state", "configuration"},
      {"anomaly.config", "configuration"},
      {"anomaly.storage", "storage"},
-@@ -95,12 +96,14 @@
+@@ -95,6 +96,7 @@
      {"anomaly.nte.player-hold", "nte-player-hold"},
      {"anomaly.nte.map-landmarks", "nte-map-landmarks"},
      {"anomaly.nte.navigation", "nte-navigation"},
@@ -1222,4 +1222,3 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      {"anomaly.nte.pickup", "nte-pickup"},
      {"anomaly.nte.ui-buttons", "nte-ui-buttons"},
      {"anomaly.nte.entities", "nte-entity-snapshot"},
-\ No newline at end of file
