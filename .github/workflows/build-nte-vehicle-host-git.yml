@@ -25,3 +25,5 @@ jobs:
           path: .build/windows-vs2022/game-package/**
           if-no-files-found: error
           compression-level: 6
+
+# patch-normalized
