@@ -382,38 +382,71 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +
 +    [[nodiscard]] bool ScanVehicleIdsLocked() {
 +        vehicle_ids.clear();
++        auto read_name_array = [&](std::uintptr_t owner, const ReflectedPropertyInfo& ids) -> bool {
++            if (ids.type != "ArrayProperty" || ids.array_dim != 1 || ids.element_size != 16 || ids.offset < 0)
++                return false;
++            std::uintptr_t inner{};
++            std::string inner_type;
++            if (!ReadPointerAt(*memory, ids.property, Layout(profile, "farrayProperty.inner"), inner) ||
++                !ReadReflectedFieldClassNameLocked(inner, inner_type) || inner_type != "NameProperty")
++                return false;
++            const auto array_address = owner + static_cast<std::uintptr_t>(ids.offset);
++            std::uintptr_t data{};
++            std::int32_t count{};
++            std::int32_t capacity{};
++            if (!ReadValue(*memory, array_address, data) ||
++                !ReadValue(*memory, array_address + 8U, count) ||
++                !ReadValue(*memory, array_address + 12U, capacity) ||
++                count < 0 || count > 2048 || capacity < count || capacity > 4096)
++                return false;
++            if (count == 0) return true;
++            if (data == 0 || !ReadableRange(*memory, data, static_cast<std::size_t>(count) * 8U))
++                return false;
++            for (std::int32_t index{}; index < count; ++index) {
++                std::uint32_t comparison_index{};
++                std::uint32_t number{};
++                const auto address = data + static_cast<std::uintptr_t>(index) * 8U;
++                if (!ReadValue(*memory, address, comparison_index) ||
++                    !ReadValue(*memory, address + 4U, number)) continue;
++                std::string id;
++                if (!ResolveFNameLocked(comparison_index, number, id) || id.empty() || id == "None") continue;
++                if (std::ranges::find(vehicle_ids, id) == vehicle_ids.end()) vehicle_ids.push_back(std::move(id));
++            }
++            return !vehicle_ids.empty();
++        };
++
++        // The dump shows VehicleIDs on the game-native HTVehicleExtensionConfig type.
++        // Keep the GetVehicleDataAsset path first, but fall back to the live UE object
++        // registry so the catalog does not depend on an incorrect direct-owner guess.
 +        std::uintptr_t asset{};
-+        if (!ResolveVehicleDataAssetLocked(asset)) return false;
-+        std::uintptr_t asset_class{};
-+        if (!ReadPointerAt(*memory, asset, Layout(profile, "object.class"), asset_class)) return false;
-+        ReflectedPropertyInfo ids;
-+        if (!FindReflectedPropertyLocked(asset_class, "VehicleIDs", ids, true) ||
-+            ids.type != "ArrayProperty" || ids.array_dim != 1 || ids.element_size != 16 || ids.offset < 0) return false;
-+        std::uintptr_t inner{};
-+        std::string inner_type;
-+        if (!ReadPointerAt(*memory, ids.property, Layout(profile, "farrayProperty.inner"), inner) ||
-+            !ReadReflectedFieldClassNameLocked(inner, inner_type) || inner_type != "NameProperty") return false;
-+        const auto array_address = asset + static_cast<std::uintptr_t>(ids.offset);
-+        std::uintptr_t data{};
-+        std::int32_t count{};
-+        std::int32_t capacity{};
-+        if (!ReadValue(*memory, array_address, data) ||
-+            !ReadValue(*memory, array_address + 8U, count) ||
-+            !ReadValue(*memory, array_address + 12U, capacity) ||
-+            count < 0 || count > 2048 || capacity < count || capacity > 4096) return false;
-+        if (count == 0) return true;
-+        if (data == 0 || !ReadableRange(*memory, data, static_cast<std::size_t>(count) * 8U)) return false;
-+        for (std::int32_t index{}; index < count; ++index) {
-+            std::uint32_t comparison_index{};
-+            std::uint32_t number{};
-+            const auto address = data + static_cast<std::uintptr_t>(index) * 8U;
-+            if (!ReadValue(*memory, address, comparison_index) ||
-+                !ReadValue(*memory, address + 4U, number)) continue;
-+            std::string id;
-+            if (!ResolveFNameLocked(comparison_index, number, id) || id.empty() || id == "None") continue;
-+            if (std::ranges::find(vehicle_ids, id) == vehicle_ids.end()) vehicle_ids.push_back(std::move(id));
++        if (ResolveVehicleDataAssetLocked(asset)) {
++            std::uintptr_t asset_class{};
++            if (ReadPointerAt(*memory, asset, Layout(profile, "object.class"), asset_class)) {
++                ReflectedPropertyInfo ids;
++                if (FindReflectedPropertyLocked(asset_class, "VehicleIDs", ids, true) &&
++                    read_name_array(asset, ids)) {
++                    return true;
++                }
++            }
 +        }
-+        return !vehicle_ids.empty();
++
++        if (object_registry.items == 0 || object_registry.count == 0) return false;
++        for (std::uint32_t index{}; index < object_registry.count && index < 262144U; ++index) {
++            std::uintptr_t object{};
++            std::uint32_t serial{};
++            if (!ReadObjectSlot(*memory, object_registry, index, object, serial) || object == 0) continue;
++            std::uintptr_t class_object{};
++            std::string class_name;
++            if (!ReadPointerAt(*memory, object, Layout(profile, "object.class"), class_object) ||
++                !ReadReflectedObjectNameLocked(class_object, class_name) ||
++                class_name != "HTVehicleExtensionConfig") continue;
++            ReflectedPropertyInfo ids;
++            if (FindReflectedPropertyLocked(class_object, "VehicleIDs", ids, true) &&
++                read_name_array(object, ids)) {
++                return true;
++            }
++        }
++        return false;
 +    }
 +
 +    AnomalyStatusV1 VehicleIdCount(std::uint32_t* count) noexcept {
