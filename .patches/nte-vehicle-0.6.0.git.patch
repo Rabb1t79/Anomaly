@@ -63,7 +63,7 @@ diff --git a/include/anomaly/sdk/services/nte.h b/include/anomaly/sdk/services/n
 diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 --- a/src/game/ue5/ue5_nte_adapter.cpp
 +++ b/src/game/ue5/ue5_nte_adapter.cpp
-@@ -739,6 +739,29 @@
+@@ -739,6 +739,26 @@
          bool cooldown_layout_valid{};
          bool combat_event_bindings_attempted{};
      } combat_skill_discovery;
@@ -89,12 +89,14 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +    bool vehicle_wheel_friction_enabled{true};
 +    float vehicle_speed_kmh{};
 +    bool vehicle_valid{};
++    std::vector<std::string> vehicle_ids;
++    std::string selected_vehicle_id;
 +    std::string selected_vehicle_id;
 +
      static constexpr std::size_t kDamageEventCapacity = 512;
      static constexpr std::uint64_t kDamageSourceBase = 0x8000000000000000ULL;
      struct DamageRecord {
-@@ -1575,6 +1598,22 @@
+@@ -1575,6 +1598,16 @@
              "cameraManager.fov"});
      }
  
@@ -163,7 +165,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
          info = std::move(candidate);
          return true;
      }
-@@ -7322,6 +7370,279 @@
+@@ -7322,6 +7370,377 @@
          return true;
      }
  
@@ -354,6 +356,103 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +        }
 +    }
 +
++    [[nodiscard]] bool ResolveVehicleDataAssetLocked(std::uintptr_t& asset) const {
++        asset = 0;
++        std::uintptr_t function{};
++        std::uintptr_t class_object{};
++        std::uintptr_t class_default_object{};
++        std::uint8_t num_parms{};
++        std::uint16_t parms_size{};
++        std::uint16_t return_value_offset{};
++        if (!FindExactObjectLocked(L"/Script/HTGame.HTGameData.GetVehicleDataAsset", function) ||
++            !ReadPointerAt(*memory, function, Layout(profile, "object.outer"), class_object) ||
++            !ReadPointerAt(*memory, class_object, Layout(profile, "uclass.classDefaultObject"), class_default_object) ||
++            !ReadValue(*memory, function + Layout(profile, "ufunction.numParms"), num_parms) ||
++            !ReadValue(*memory, function + Layout(profile, "ufunction.parmsSize"), parms_size) ||
++            !ReadValue(*memory, function + Layout(profile, "ufunction.returnValueOffset"), return_value_offset) ||
++            num_parms != 1 || parms_size < sizeof(std::uintptr_t) || parms_size > 64 ||
++            return_value_offset > parms_size - sizeof(std::uintptr_t) || !process_event_invoker) return false;
++        std::array<std::uint8_t, 64> parameters{};
++        if (!ReadableRange(*memory, class_default_object, 0x20U) ||
++            !ReadableRange(*memory, function, 0x20U) ||
++            !InvokeProcessEventGuarded(process_event_invoker, class_default_object, function,
++                parameters.data(), parms_size)) return false;
++        std::memcpy(&asset, parameters.data() + return_value_offset, sizeof(asset));
++        return asset != 0 && ReadableRange(*memory, asset, 0x20U);
++    }
++
++    [[nodiscard]] bool ScanVehicleIdsLocked() {
++        vehicle_ids.clear();
++        std::uintptr_t asset{};
++        if (!ResolveVehicleDataAssetLocked(asset)) return false;
++        std::uintptr_t asset_class{};
++        if (!ReadPointerAt(*memory, asset, Layout(profile, "object.class"), asset_class)) return false;
++        ReflectedPropertyInfo ids;
++        if (!FindReflectedPropertyLocked(asset_class, "VehicleIDs", ids, true) ||
++            ids.type != "ArrayProperty" || ids.array_dim != 1 || ids.element_size != 16 || ids.offset < 0) return false;
++        std::uintptr_t inner{};
++        std::string inner_type;
++        if (!ReadPointerAt(*memory, ids.property, Layout(profile, "farrayProperty.inner"), inner) ||
++            !ReadReflectedFieldClassNameLocked(inner, inner_type) || inner_type != "NameProperty") return false;
++        const auto array_address = asset + static_cast<std::uintptr_t>(ids.offset);
++        std::uintptr_t data{};
++        std::int32_t count{};
++        std::int32_t capacity{};
++        if (!ReadValue(*memory, array_address, data) ||
++            !ReadValue(*memory, array_address + 8U, count) ||
++            !ReadValue(*memory, array_address + 12U, capacity) ||
++            count < 0 || count > 2048 || capacity < count || capacity > 4096) return false;
++        if (count == 0) return true;
++        if (data == 0 || !ReadableRange(*memory, data, static_cast<std::size_t>(count) * 8U)) return false;
++        for (std::int32_t index{}; index < count; ++index) {
++            std::uint32_t comparison_index{};
++            std::uint32_t number{};
++            const auto address = data + static_cast<std::uintptr_t>(index) * 8U;
++            if (!ReadValue(*memory, address, comparison_index) ||
++                !ReadValue(*memory, address + 4U, number)) continue;
++            std::string id;
++            if (!ResolveFNameLocked(comparison_index, number, id) || id.empty() || id == "None") continue;
++            if (std::ranges::find(vehicle_ids, id) == vehicle_ids.end()) vehicle_ids.push_back(std::move(id));
++        }
++        return !vehicle_ids.empty();
++    }
++
++    AnomalyStatusV1 VehicleIdCount(std::uint32_t* count) noexcept {
++        if (count == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
++        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
++            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle catalog must run on Game thread");
++        std::scoped_lock lock(mutex);
++        if (vehicle_ids.empty() && !ScanVehicleIdsLocked())
++            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "DT_VehicleData VehicleIDs is unavailable");
++        *count = static_cast<std::uint32_t>(vehicle_ids.size());
++        return Status(ANOMALY_STATUS_V1_OK);
++    }
++
++    AnomalyStatusV1 VehicleIdAt(std::uint32_t index, char* destination, std::size_t* inout_size) noexcept {
++        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
++            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle catalog must run on Game thread");
++        std::scoped_lock lock(mutex);
++        if (vehicle_ids.empty() && !ScanVehicleIdsLocked())
++            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "DT_VehicleData VehicleIDs is unavailable");
++        if (index >= vehicle_ids.size()) return Status(ANOMALY_STATUS_V1_NOT_FOUND);
++        return CopyString(vehicle_ids[index], destination, inout_size);
++    }
++
++    AnomalyStatusV1 VehicleSetSummonVehicleId(AnomalyStringViewV1 value) noexcept {
++        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
++            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle selection must run on Game thread");
++        if (value.data == nullptr || value.size == 0 || value.size > ANOMALY_NTE_VEHICLE_V1_ID_MAX_BYTES)
++            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
++        std::scoped_lock lock(mutex);
++        if (vehicle_ids.empty() && !ScanVehicleIdsLocked())
++            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "DT_VehicleData VehicleIDs is unavailable");
++        std::string requested(value.data, value.size);
++        if (std::ranges::find(vehicle_ids, requested) == vehicle_ids.end())
++            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "vehicle id is not present in DT_VehicleData");
++        selected_vehicle_id = std::move(requested);
++        return Status(ANOMALY_STATUS_V1_OK);
++    }
++
 +    AnomalyStatusV1 VehicleSnapshot(AnomalyNteVehicleSnapshotV1* snapshot) noexcept {
 +        if (snapshot == nullptr || snapshot->struct_size < sizeof(*snapshot))
 +            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
@@ -450,7 +549,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
      [[nodiscard]] bool BuildNteFunctionBindingLocked(
          const std::uintptr_t function,
          const NteFunctionKind kind,
-@@ -12481,6 +12802,10 @@
+@@ -12481,6 +12802,4 @@
              sizeof(AnomalyNteNavigationServiceV1),
              ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
              this, MoveToLocationThunk, StopMovementThunk};
@@ -469,7 +568,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
      AnomalyNtePickupServiceV1 pickup_service{};
      AnomalyNteUiButtonsServiceV1 ui_buttons_service{};
      AnomalyNteEntitiesServiceV1 entities_service{};
-@@ -12802,6 +13128,34 @@
+@@ -12802,6 +13128,45 @@
          return lease ? State::MapLandmarkTeleport(lease.User(), request) : StoppedStatus();
      }
  
@@ -499,6 +598,23 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleSummonThunk(void* user) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
 +        return lease ? State::VehicleSummon(lease.User()) : StoppedStatus();
++    }
++
++    static AnomalyStatusV1 ANOMALY_CALL VehicleIdCountThunk(void* user, std::uint32_t* count) noexcept {
++        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
++        return lease ? State::VehicleIdCount(lease.User(), count) : StoppedStatus();
++    }
++
++    static AnomalyStatusV1 ANOMALY_CALL VehicleIdAtThunk(
++        void* user, std::uint32_t index, char* destination, std::size_t* inout_size) noexcept {
++        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
++        return lease ? State::VehicleIdAt(lease.User(), index, destination, inout_size) : StoppedStatus();
++    }
++
++    static AnomalyStatusV1 ANOMALY_CALL VehicleSetSummonVehicleIdThunk(
++        void* user, AnomalyStringViewV1 value) noexcept {
++        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
++        return lease ? State::VehicleSetSummonVehicleId(lease.User(), value) : StoppedStatus();
 +    }
 +
      static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
