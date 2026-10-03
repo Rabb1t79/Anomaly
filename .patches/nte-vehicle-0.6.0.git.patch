@@ -164,7 +164,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
          info = std::move(candidate);
          return true;
      }
-@@ -7322,6 +7370,383 @@
+@@ -7322,6 +7370,416 @@
          return true;
      }
  
