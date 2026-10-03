@@ -548,7 +548,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
      [[nodiscard]] bool BuildNteFunctionBindingLocked(
          const std::uintptr_t function,
          const NteFunctionKind kind,
-@@ -12481,6 +12802,10 @@
+@@ -12481,6 +12802,11 @@
              sizeof(AnomalyNteNavigationServiceV1),
              ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION,
              this, MoveToLocationThunk, StopMovementThunk};
