@@ -670,7 +670,6 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      {"anomaly.nte.pickup", "nte-pickup"},
      {"anomaly.nte.ui-buttons", "nte-ui-buttons"},
      {"anomaly.nte.entities", "nte-entity-snapshot"},
-\ No newline at end of file
 @@ -2038,6 +2077,7 @@
          if (feature == "ue5.streaming-source") return Ue5StreamingSourceAvailable();
          if (feature == "nte.map-landmarks") return NteMapLandmarksAvailable();
