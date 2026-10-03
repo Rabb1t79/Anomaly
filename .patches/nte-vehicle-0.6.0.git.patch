@@ -336,6 +336,14 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +                current_vehicle_object = 0;
 +                return false;
 +            }
++            // A valid driving vehicle must be a vehicle-class Actor. Ownership is
++            // checked separately so a summon target is never filtered by owner;
++            // after spawning, the resulting entity must resolve back to the player.
++            if (!IsVehicleClassNameLocked(vehicle)) {
++                vehicle_valid = false;
++                current_vehicle_object = 0;
++                return false;
++            }
 +            current_vehicle_object = vehicle;
 +            vehicle_valid = true;
 +            if (vehicle_bindings.speed_kmh.function != 0) {
