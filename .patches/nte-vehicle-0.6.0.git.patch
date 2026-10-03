@@ -382,32 +382,32 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +
 +    [[nodiscard]] bool ScanVehicleIdsLocked() {
 +        vehicle_ids.clear();
++        // Do not assume that the game's vehicle catalog lives on one specific
++        // extension class. The dump exposes VehicleIDs/DefaultVehicleID around
++        // the vehicle data system, while the live class used by a summoned
++        // vehicle is a separate BP_* class. Search reflected UE objects for a
++        // VehicleIDs Name array instead of hard-coding one owner type.
 +        auto read_name_array = [&](std::uintptr_t owner, const ReflectedPropertyInfo& ids) -> bool {
 +            if (ids.type != "ArrayProperty" || ids.array_dim != 1 || ids.element_size != 16 || ids.offset < 0)
 +                return false;
 +            std::uintptr_t inner{};
 +            std::string inner_type;
 +            if (!ReadPointerAt(*memory, ids.property, Layout(profile, "farrayProperty.inner"), inner) ||
-+                !ReadReflectedFieldClassNameLocked(inner, inner_type) || inner_type != "NameProperty")
-+                return false;
++                !ReadReflectedFieldClassNameLocked(inner, inner_type) || inner_type != "NameProperty") return false;
 +            const auto array_address = owner + static_cast<std::uintptr_t>(ids.offset);
 +            std::uintptr_t data{};
 +            std::int32_t count{};
 +            std::int32_t capacity{};
-+            if (!ReadValue(*memory, array_address, data) ||
-+                !ReadValue(*memory, array_address + 8U, count) ||
-+                !ReadValue(*memory, array_address + 12U, capacity) ||
-+                count < 0 || count > 2048 || capacity < count || capacity > 4096)
-+                return false;
++            if (!ReadValue(*memory, array_address, data) || !ReadValue(*memory, array_address + 8U, count) ||
++                !ReadValue(*memory, array_address + 12U, capacity) || count < 0 || count > 4096 ||
++                capacity < count || capacity > 8192) return false;
 +            if (count == 0) return true;
-+            if (data == 0 || !ReadableRange(*memory, data, static_cast<std::size_t>(count) * 8U))
-+                return false;
++            if (data == 0 || !ReadableRange(*memory, data, static_cast<std::size_t>(count) * 8U)) return false;
 +            for (std::int32_t index{}; index < count; ++index) {
 +                std::uint32_t comparison_index{};
 +                std::uint32_t number{};
 +                const auto address = data + static_cast<std::uintptr_t>(index) * 8U;
-+                if (!ReadValue(*memory, address, comparison_index) ||
-+                    !ReadValue(*memory, address + 4U, number)) continue;
++                if (!ReadValue(*memory, address, comparison_index) || !ReadValue(*memory, address + 4U, number)) continue;
 +                std::string id;
 +                if (!ResolveFNameLocked(comparison_index, number, id) || id.empty() || id == "None") continue;
 +                if (std::ranges::find(vehicle_ids, id) == vehicle_ids.end()) vehicle_ids.push_back(std::move(id));
@@ -415,40 +415,62 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +            return !vehicle_ids.empty();
 +        };
 +
-+        // The dump shows VehicleIDs on the game-native HTVehicleExtensionConfig type.
-+        // Keep the GetVehicleDataAsset path first, but fall back to the live UE object
-+        // registry so the catalog does not depend on an incorrect direct-owner guess.
-+        std::uintptr_t asset{};
-+        if (ResolveVehicleDataAssetLocked(asset)) {
-+            std::uintptr_t asset_class{};
-+            if (ReadPointerAt(*memory, asset, Layout(profile, "object.class"), asset_class)) {
-+                ReflectedPropertyInfo ids;
-+                if (FindReflectedPropertyLocked(asset_class, "VehicleIDs", ids, true) &&
-+                    read_name_array(asset, ids)) {
-+                    return true;
-+                }
-+            }
-+        }
++        auto scan_object_for_vehicle_ids = [&](const std::uintptr_t object) -> bool {
++            if (object == 0) return false;
++            std::uintptr_t class_object{};
++            std::string class_name;
++            if (!ReadPointerAt(*memory, object, Layout(profile, "object.class"), class_object) ||
++                !ReadReflectedObjectNameLocked(class_object, class_name)) return false;
++            ReflectedPropertyInfo ids;
++            if (FindReflectedPropertyLocked(class_object, "VehicleIDs", ids, true) && read_name_array(object, ids)) return true;
++            return false;
++        };
 +
++        // First use the native accessor if available, but accept either the
++        // asset class or any returned object carrying the reflected VehicleIDs field.
++        std::uintptr_t asset{};
++        if (ResolveVehicleDataAssetLocked(asset) && scan_object_for_vehicle_ids(asset)) return true;
++
++        // The earlier implementation only accepted HTVehicleExtensionConfig.
++        // That is too narrow for this build: the dump also contains HTVehicleDataAsset
++        // and the live data system can materialize a different reflected owner.
 +        if (object_registry.items == 0 || object_registry.count == 0) return false;
-+        for (std::uint32_t index{}; index < object_registry.count && index < 262144U; ++index) {
++        const std::uint32_t limit = (std::min)(object_registry.count, 524288U);
++        for (std::uint32_t index{}; index < limit; ++index) {
 +            std::uintptr_t object{};
 +            std::uint32_t serial{};
 +            if (!ReadObjectSlot(*memory, object_registry, index, object, serial) || object == 0) continue;
 +            std::uintptr_t class_object{};
 +            std::string class_name;
 +            if (!ReadPointerAt(*memory, object, Layout(profile, "object.class"), class_object) ||
-+                !ReadReflectedObjectNameLocked(class_object, class_name) ||
-+                class_name != "HTVehicleExtensionConfig") continue;
++                !ReadReflectedObjectNameLocked(class_object, class_name)) continue;
++            if (class_name.find("Vehicle") == std::string::npos && class_name.find("vehicle") == std::string::npos) continue;
 +            ReflectedPropertyInfo ids;
-+            if (FindReflectedPropertyLocked(class_object, "VehicleIDs", ids, true) &&
-+                read_name_array(object, ids)) {
-+                return true;
-+            }
++            if (FindReflectedPropertyLocked(class_object, "VehicleIDs", ids, true) && read_name_array(object, ids)) return true;
 +        }
 +        return false;
 +    }
 +
++    [[nodiscard]] bool IsVehicleClassNameLocked(const std::uintptr_t object) const {
++        if (object == 0) return false;
++        std::uintptr_t class_object{};
++        std::string class_name;
++        return ReadPointerAt(*memory, object, Layout(profile, "object.class"), class_object) &&
++            ReadReflectedObjectNameLocked(class_object, class_name) &&
++            (class_name.find("vehicle") != std::string::npos || class_name.find("Vehicle") != std::string::npos);
++    }
++
++    [[nodiscard]] bool VehicleOwnedByPlayerLocked(const std::uintptr_t object) const {
++        if (object == 0 || player_pawn == 0) return false;
++        std::uintptr_t class_object{};
++        if (!ReadPointerAt(*memory, object, Layout(profile, "object.class"), class_object)) return false;
++        ReflectedPropertyInfo owner;
++        if (!FindReflectedPropertyLocked(class_object, "Owner", owner, true) || owner.offset < 0) return false;
++        std::uintptr_t owner_object{};
++        if (!ReadPointerAt(*memory, object, owner.offset, owner_object)) return false;
++        return owner_object == player_pawn;
++    }
+
 +    AnomalyStatusV1 VehicleIdCount(std::uint32_t* count) noexcept {
 +        if (count == nullptr) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
 +        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
