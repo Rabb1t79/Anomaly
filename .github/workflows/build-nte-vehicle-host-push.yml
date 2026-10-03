@@ -13,7 +13,7 @@ jobs:
       - name: Apply NTE Vehicle host patch
         shell: pwsh
         run: |
-          git apply --check --whitespace=nowarn .patches/nte-vehicle-0.6.0.patch
+          git apply --check --whitespace=nowarn .patches/nte-vehicle-0.6.0.git.patch
           git apply --whitespace=nowarn .patches/nte-vehicle-0.6.0.patch
       - name: Build Anomaly
         shell: cmd
