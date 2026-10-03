@@ -555,7 +555,8 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +        vehicle_service = {
 +            sizeof(AnomalyNteVehicleServiceV1), ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION,
 +            this, VehicleSnapshotThunk, VehicleSetTopSpeedRatioThunk,
-+            VehicleSetWheelFrictionThunk, VehicleResetThunk, VehicleSummonThunk};
++            VehicleSetWheelFrictionThunk, VehicleResetThunk, VehicleSummonThunk,
++            VehicleIdCountThunk, VehicleIdAtThunk, VehicleSetSummonVehicleIdThunk};
          pickup_service = {
              sizeof(AnomalyNtePickupServiceV1),
              ANOMALY_NTE_PICKUP_SERVICE_V1_VERSION,
@@ -574,46 +575,46 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleSnapshotThunk(
 +        void* user, AnomalyNteVehicleSnapshotV1* snapshot) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleSnapshot(lease.User(), snapshot) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleSnapshot(snapshot) : StoppedStatus();
 +    }
 +
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleSetTopSpeedRatioThunk(
 +        void* user, float ratio) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleSetTopSpeedRatio(lease.User(), ratio) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleSetTopSpeedRatio(ratio) : StoppedStatus();
 +    }
 +
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleSetWheelFrictionThunk(
 +        void* user, std::uint32_t enabled) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleSetWheelFriction(lease.User(), enabled != 0) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleSetWheelFriction(enabled != 0) : StoppedStatus();
 +    }
 +
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleResetThunk(void* user) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleReset(lease.User()) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleReset() : StoppedStatus();
 +    }
 +
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleSummonThunk(void* user) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleSummon(lease.User()) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleSummon() : StoppedStatus();
 +    }
 +
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleIdCountThunk(void* user, std::uint32_t* count) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleIdCount(lease.User(), count) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleIdCount(count) : StoppedStatus();
 +    }
 +
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleIdAtThunk(
 +        void* user, std::uint32_t index, char* destination, std::size_t* inout_size) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleIdAt(lease.User(), index, destination, inout_size) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleIdAt(index, destination, inout_size) : StoppedStatus();
 +    }
 +
 +    static AnomalyStatusV1 ANOMALY_CALL VehicleSetSummonVehicleIdThunk(
 +        void* user, AnomalyStringViewV1 value) noexcept {
 +        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
-+        return lease ? State::VehicleSetSummonVehicleId(lease.User(), value) : StoppedStatus();
++        return lease ? static_cast<State*>(lease.User())->VehicleSetSummonVehicleId(value) : StoppedStatus();
 +    }
 +
      static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
