@@ -89,6 +89,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +    bool vehicle_wheel_friction_enabled{true};
 +    float vehicle_speed_kmh{};
 +    bool vehicle_valid{};
++    std::string selected_vehicle_id;
 +
      static constexpr std::size_t kDamageEventCapacity = 512;
      static constexpr std::uint64_t kDamageSourceBase = 0x8000000000000000ULL;
@@ -230,6 +231,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +            const bool float_return = mode == "FloatReturn";
 +            const bool float_input = mode == "FloatInput";
 +            const bool bool_input = mode == "BoolInput";
++            const bool fname_input = mode == "FNameInput";
 +            const bool no_args = mode == "NoArgs";
 +            if (no_args) {
 +                if (num_parms != 0 || parms_size != 0 || return_offset != 0xFFFFu || property != 0) return false;
@@ -238,8 +240,8 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +            } else if (object_return || float_return) {
 +                const std::uint16_t expected_size = object_return ? 8u : 4u;
 +                if (num_parms != 1 || parms_size != expected_size || return_offset == 0xFFFFu) return false;
-+            } else if (float_input || bool_input) {
-+                const std::uint16_t expected_size = float_input ? 4u : 1u;
++            } else if (float_input || bool_input || fname_input) {
++                const std::uint16_t expected_size = fname_input ? 8u : (float_input ? 4u : 1u);
 +                if (num_parms != 1 || parms_size != expected_size || return_offset != 0xFFFFu) return false;
 +            } else {
 +                return false;
@@ -257,7 +259,8 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +                static_cast<std::uint16_t>(info.offset) == return_offset;
 +            const bool expected_input =
 +                (float_input && info.type == "FloatProperty" && info.element_size == 4) ||
-+                (bool_input && info.type == "BoolProperty" && info.element_size == 1);
++                (bool_input && info.type == "BoolProperty" && info.element_size == 1) ||
++                (fname_input && info.type == "NameProperty" && info.element_size == 8);
 +            if (!expected_return && !expected_input) return false;
 +            binding = {function, parms_size,
 +                static_cast<std::uint16_t>(info.offset), return_offset,
@@ -317,9 +320,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +            if (vehicle_bindings.summon_vehicle.function == 0) {
 +                static constexpr std::array<std::string_view, 2> summon_outers{
 +                    "HTPlayerController", "HTPlayerCharacter"};
-+                if (!FindVehicleFunctionLocked("TestSummonVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle)) {
-+                    static_cast<void>(FindVehicleFunctionLocked("CheatSpawnVehicle", summon_outers, "NoArgs", vehicle_bindings.summon_vehicle));
-+                }
++                static_cast<void>(FindVehicleFunctionLocked("CheatSpawnVehicle", summon_outers, "FNameInput", vehicle_bindings.summon_vehicle));
 +            }
 +            if (vehicle_bindings.set_wheel_friction.function == 0) {
 +                static_cast<void>(FindVehicleFunctionLocked("SetEnableWheelFriction", vehicle_outers, "BoolInput", vehicle_bindings.set_wheel_friction));
@@ -411,10 +412,17 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 +            return Status(ANOMALY_STATUS_V1_FAILED, "vehicle summon must run on Game thread");
 +        std::scoped_lock lock(mutex);
 +        if (!RefreshVehicleLocked() || vehicle_bindings.summon_vehicle.function == 0)
-+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "TestSummonVehicle/CheatSpawnVehicle zero-arg binding is not validated");
++            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "CheatSpawnVehicle(FName) binding is not validated");
++        if (selected_vehicle_id.empty())
++            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT, "no vehicle id selected");
++        std::uint32_t comparison_index{};
++        const auto name_status = FindNameIdLocked(selected_vehicle_id, comparison_index);
++        if (name_status.code != ANOMALY_STATUS_V1_OK) return name_status;
++        struct FNameValue { std::uint32_t comparison_index; std::uint32_t number; };
++        FNameValue value{comparison_index, 0};
 +        if (!InvokeProcessEventGuarded(process_event_invoker, player_controller,
-+                vehicle_bindings.summon_vehicle.function, nullptr, 0))
-+            return Status(ANOMALY_STATUS_V1_FAILED, "summon vehicle ProcessEvent failed");
++                vehicle_bindings.summon_vehicle.function, &value, sizeof(value)))
++            return Status(ANOMALY_STATUS_V1_FAILED, "CheatSpawnVehicle(FName) ProcessEvent failed");
 +        return Status(ANOMALY_STATUS_V1_OK);
 +    }
 +
