@@ -10,7 +10,7 @@ diff --git a/include/anomaly/sdk/services/nte.h b/include/anomaly/sdk/services/n
  #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID "anomaly.nte.ui-buttons"
  #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION 1u
  #define ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES 128u
-@@ -291,7 +293,50 @@
+@@ -291,6 +293,49 @@
      AnomalyStatusV1 (ANOMALY_CALL *stop_movement)(void* user);
  } AnomalyNteNavigationServiceV1;
  
@@ -619,7 +619,7 @@ diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
      static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
          void* user,
          const double destination[3]) noexcept {
-@@ -14013,7 +14367,14 @@
+@@ -14013,6 +14367,13 @@
              semantic_lifetime)) {
          return false;
      }
@@ -1171,7 +1171,7 @@ diff --git a/src/plugin/plugin_capability_policy.cpp b/src/plugin/plugin_capabil
      static AnomalyStatusV1 ANOMALY_CALL MoveToLocationThunk(
          void* user,
          const double destination[3]) noexcept {
-@@ -14013,7 +14367,14 @@
+@@ -14013,6 +14367,13 @@
              semantic_lifetime)) {
          return false;
      }
