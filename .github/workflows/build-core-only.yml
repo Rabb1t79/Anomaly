@@ -1,0 +1,58 @@
+name: build-core-only
+
+on:
+  push:
+    branches:
+      - "build/core-nte-interfaces-20261008"
+    paths:
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "config/**"
+      - "include/**"
+      - "src/**"
+      - "profiles/nte/**"
+      - ".github/workflows/build-core-only.yml"
+  workflow_dispatch:
+
+jobs:
+  build-core:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake --preset windows-vs2022
+
+      - name: Build Anomaly.Core
+        shell: pwsh
+        run: |
+          cmake --build --preset windows-relwithdebinfo --target anomaly_core --parallel
+
+      - name: Collect Core
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem ".build/windows-vs2022" -Recurse -Filter "Anomaly.Core.dll" |
+            Select-Object -First 1
+          if ($null -eq $dll) {
+            throw "Anomaly.Core.dll was not produced."
+          }
+
+          New-Item -ItemType Directory -Force ".build/core-artifact" | Out-Null
+          Copy-Item $dll.FullName ".build/core-artifact/Anomaly.Core.dll" -Force
+
+          $hash = (Get-FileHash ".build/core-artifact/Anomaly.Core.dll" -Algorithm SHA256).Hash
+          Set-Content -Path ".build/core-artifact/SHA256SUMS.txt" -Value ("{0}  Anomaly.Core.dll" -f $hash) -Encoding ascii
+
+          Write-Host "Core path: $($dll.FullName)"
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Anomaly.Core
+        uses: actions/upload-artifact@v4
+        with:
+          name: anomaly-core-nte-interfaces
+          path: .build/core-artifact
+          if-no-files-found: error
