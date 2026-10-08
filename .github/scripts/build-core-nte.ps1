@@ -49,7 +49,7 @@ if (Test-Path $root) { Remove-Item $root -Recurse -Force }
 Expand-Archive -Path $zip -DestinationPath $root -Force
 $top = Get-ChildItem $root -Directory | Select-Object -First 1
 if ($null -eq $top) { throw 'LLVM-MinGW archive root not found.' }
-$bin = Join-Path $top.FullName 'bin'
+$bin = (Join-Path $top.FullName 'bin').Replace('\','/')
 $env:PATH = $bin + ';' + $env:PATH
 
 $build = Join-Path $env:GITHUB_WORKSPACE '.build/core-llvm'
