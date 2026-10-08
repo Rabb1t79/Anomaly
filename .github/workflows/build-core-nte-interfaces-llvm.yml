@@ -1,0 +1,167 @@
+name: Build Anomaly Core with NTE Vehicle and Attack Input
+
+on:
+  push:
+    branches:
+      - build/windows-core-nte-interfaces-20261008
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-core:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check source baseline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git rev-parse HEAD
+          if (-not (Test-Path 'src/game/ue5/ue5_nte_adapter.cpp')) { throw 'Expected Anomaly Core source is missing.' }
+          if (-not (Test-Path 'include/anomaly/sdk/services/nte.h')) { throw 'Expected NTE SDK header is missing.' }
+
+      - name: Validate patches before applying
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $patches = @(
+            'build_patches/nte_vehicle.patch',
+            'build_patches/vehicle.patch',
+            'build_patches/attack_header_root.patch',
+            'build_patches/attack_ab434.patch',
+            'build_patches/attack_4a.patch',
+            'build_patches/attack_e9.patch',
+            'build_patches/attack_343e.patch',
+            'build_patches/capability_nte_vehicle_attack.patch'
+          )
+          foreach ($patch in $patches) {
+            if (-not (Test-Path $patch)) { throw "Patch file not found: $patch" }
+            Write-Host "Checking $patch"
+            git apply --check $patch
+            if ($LASTEXITCODE -ne 0) { throw "git apply --check failed for $patch" }
+          }
+
+      - name: Apply NTE Core patches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $patches = @(
+            'build_patches/nte_vehicle.patch',
+            'build_patches/vehicle.patch',
+            'build_patches/attack_header_root.patch',
+            'build_patches/attack_ab434.patch',
+            'build_patches/attack_4a.patch',
+            'build_patches/attack_e9.patch',
+            'build_patches/attack_343e.patch',
+            'build_patches/capability_nte_vehicle_attack.patch'
+          )
+          foreach ($patch in $patches) {
+            Write-Host "Applying $patch"
+            git apply $patch
+            if ($LASTEXITCODE -ne 0) { throw "git apply failed for $patch" }
+          }
+
+      - name: Check resulting source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $adapter = Get-Content 'src/game/ue5/ue5_nte_adapter.cpp' -Raw
+          $nte = Get-Content 'include/anomaly/sdk/services/nte.h' -Raw
+          $policy = Get-Content 'src/plugin/plugin_capability_policy.cpp' -Raw
+          $all = $adapter + $nte + $policy
+          foreach ($needle in @(
+            'AnomalyNteAttackInputServiceV1',
+            'ANOMALY_NTE_ATTACK_INPUT_SERVICE_V1_ID',
+            'ActivateAbilityFromID',
+            'ReleaseAbilityFromID',
+            'ActivateMeleeInput',
+            'attack_input_service',
+            'NteVehicleProfileAvailable',
+            'summon_vehicle',
+            'nte-vehicle',
+            'nte-attack-input'
+          )) {
+            if ($all -notmatch [regex]::Escape($needle)) { throw "Expected source symbol missing: $needle" }
+          }
+
+      - name: Install LLVM-MinGW 20260922 MSVCRT
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'llvm-mingw-20260922-msvcrt-x86_64.zip'
+          $root = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+          $url = 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-msvcrt-x86_64.zip'
+          $expected = '1E936A4A694FC27F9625E3311F5EC5D6D99ABFEAA514FD41C52A4F8347145D1A'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToUpperInvariant()
+          if ($actual -ne $expected) { throw "LLVM-MinGW SHA256 mismatch. Expected $expected, got $actual" }
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          Expand-Archive -Path $zip -DestinationPath $root -Force
+          $top = Get-ChildItem $root -Directory | Select-Object -First 1
+          if ($null -eq $top) { throw 'LLVM-MinGW archive root was not found.' }
+          $bin = Join-Path $top.FullName 'bin'
+          foreach ($tool in @('clang.exe','clang++.exe','llvm-ml.exe','llvm-rc.exe','llvm-strings.exe','llvm-readobj.exe')) {
+            if (-not (Test-Path (Join-Path $bin $tool))) { throw "LLVM-MinGW tool missing: $tool" }
+          }
+          "LLVM_MINGW_ROOT=$($top.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "$bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Configure Core
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE '.build/core-llvm'
+          if (Test-Path $build) { Remove-Item $build -Recurse -Force }
+          cmake -S . -B $build -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_COMPILER="$env:LLVM_MINGW_ROOT/bin/clang.exe" -DCMAKE_CXX_COMPILER="$env:LLVM_MINGW_ROOT/bin/clang++.exe" -DCMAKE_ASM_MASM_COMPILER="$env:LLVM_MINGW_ROOT/bin/llvm-ml.exe" -DCMAKE_RC_COMPILER="$env:LLVM_MINGW_ROOT/bin/llvm-rc.exe" -DCMAKE_C_COMPILER_TARGET=x86_64-w64-windows-gnu -DCMAKE_CXX_COMPILER_TARGET=x86_64-w64-windows-gnu -DANOMALY_BUILD_SDK_EXAMPLES=OFF -DANOMALY_BUILD_BUILTIN_PLUGINS=OFF -DANOMALY_BUILD_TEST_PLUGINS=OFF -DANOMALY_BUILD_TEST_FIXTURES=OFF -DANOMALY_BUILD_SYMBOLS=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
+
+      - name: Build Anomaly.Core.dll
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE '.build/core-llvm'
+          cmake --build $build --target anomaly_core --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Anomaly.Core build failed.' }
+
+      - name: Validate Anomaly.Core.dll
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE '.build/core-llvm'
+          $core = Get-ChildItem $build -Recurse -Filter 'Anomaly.Core.dll' -File | Select-Object -First 1 -ExpandProperty FullName
+          if ($null -eq $core -or -not (Test-Path $core)) { throw 'Anomaly.Core.dll was not produced.' }
+          $size = (Get-Item $core).Length
+          if ($size -lt 1000000) { throw "Anomaly.Core.dll is unexpectedly small: $size bytes" }
+          $strings = & "$env:LLVM_MINGW_ROOT/bin/llvm-strings.exe" $core
+          foreach ($needle in @('anomaly.nte.vehicle','anomaly.nte.attack-input')) {
+            if (-not ($strings -contains $needle)) { throw "Expected service string not found in Anomaly.Core.dll: $needle" }
+          }
+          & "$env:LLVM_MINGW_ROOT/bin/llvm-readobj.exe" --file-headers $core
+          $hash = (Get-FileHash -Algorithm SHA256 $core).Hash
+          $out = Join-Path $env:GITHUB_WORKSPACE 'artifact'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Copy-Item $core (Join-Path $out 'Anomaly.Core.dll') -Force
+          "$hash  Anomaly.Core.dll" | Set-Content (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          Write-Host "Anomaly.Core.dll: $size bytes"
+          Write-Host "SHA256: $hash"
+
+      - name: Upload Core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anomaly-Core-NTE-interfaces-LLVM
+          path: artifact
+          if-no-files-found: error
+
+      - name: Upload build tree for diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anomaly-Core-NTE-build-diagnostics
+          path: |
+            .build/core-llvm/CMakeCache.txt
+            .build/core-llvm/CMakeFiles
+          if-no-files-found: warn
