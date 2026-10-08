@@ -1,0 +1,34 @@
+name: Build Anomaly Core Only 20261008
+
+on:
+  push:
+    branches:
+      - build/core-vehicle-attack-input-20261008
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset windows-vs2022
+      - name: Build anomaly_core only
+        shell: pwsh
+        run: cmake --build .build/windows-vs2022 --config RelWithDebInfo --target anomaly_core --parallel 2
+      - name: Stage Core
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dll = Get-ChildItem -Path .build/windows-vs2022 -Filter 'Anomaly.Core.dll' -Recurse -File | Select-Object -First 1
+          if ($null -eq $dll) { throw 'Anomaly.Core.dll was not produced' }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $dll.FullName dist/Anomaly.Core.dll -Force
+          Get-FileHash dist/Anomaly.Core.dll -Algorithm SHA256 | Format-List
+      - name: Upload Core
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anomaly.Core-vehicle-attack-input-20261008
+          path: dist/Anomaly.Core.dll
+          if-no-files-found: error
