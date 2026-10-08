@@ -14282,6 +14282,15 @@ private:
             : StoppedStatus();
     }
 
+    // Bridges the public attack-input ABI to the State-owned native melee input implementation.
+    // The lease prevents a stopped Host generation from being called through a stale service table.
+    static AnomalyStatusV1 ANOMALY_CALL ActivateMeleeInputThunk(void* user) noexcept {
+        auto lease = static_cast<SemanticServiceEndpoint*>(user)->Acquire();
+        return lease
+            ? State::ActivateMeleeInput(lease.User())
+            : StoppedStatus();
+    }
+
     std::weak_ptr<State> state_;
     AdmissionGate gate_;
 
