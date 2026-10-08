@@ -1,5 +1,5 @@
---- a/include/anomaly/sdk/services/nte.h	2026-10-06 23:42:16.000000000 +0000
-+++ b/include/anomaly/sdk/services/nte.h	2026-10-08 03:02:15.009521185 +0000
+--- a/include/anomaly/sdk/services/nte.h
++++ b/include/anomaly/sdk/services/nte.h
 @@ -32,6 +32,8 @@
  #define ANOMALY_NTE_ESC_MENU_BUTTON_SERVICE_V1_VERSION 1u
  #define ANOMALY_NTE_PICKUP_SERVICE_V1_ID "anomaly.nte.pickup"
@@ -9,7 +9,7 @@
  #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_ID "anomaly.nte.ui-buttons"
  #define ANOMALY_NTE_UI_BUTTONS_SERVICE_V1_VERSION 1u
  #define ANOMALY_NTE_UI_BUTTON_V1_NAME_MAX_BYTES 128u
-@@ -291,6 +293,37 @@
+@@ -291,6 +293,36 @@
      AnomalyStatusV1 (ANOMALY_CALL *stop_movement)(void* user);
  } AnomalyNteNavigationServiceV1;
  
