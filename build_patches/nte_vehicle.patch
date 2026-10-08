@@ -1,3 +1,4 @@
+diff --git a/include/anomaly/sdk/services/nte.h b/include/anomaly/sdk/services/nte.h
 --- a/include/anomaly/sdk/services/nte.h
 +++ b/include/anomaly/sdk/services/nte.h
 @@ -32,6 +32,8 @@

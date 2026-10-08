@@ -1,3 +1,4 @@
+diff --git a/src/game/ue5/ue5_nte_adapter.cpp b/src/game/ue5/ue5_nte_adapter.cpp
 --- a/src/game/ue5/ue5_nte_adapter.cpp	2026-10-06 23:42:16.000000000 +0000
 +++ b/src/game/ue5/ue5_nte_adapter.cpp	2026-10-08 03:12:08.083092722 +0000
 @@ -739,6 +739,29 @@
