@@ -24,6 +24,8 @@
 #define ANOMALY_NTE_SKILLS_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_ID "anomaly.nte.skill-invocation"
 #define ANOMALY_NTE_SKILL_INVOCATION_SERVICE_V1_VERSION 1u
+#define ANOMALY_NTE_ATTACK_INPUT_SERVICE_V1_ID "anomaly.nte.attack-input"
+#define ANOMALY_NTE_ATTACK_INPUT_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ENTITY_PAGE_V1_MAX_CAPACITY 256u
 #define ANOMALY_NTE_SKILL_PAGE_V1_MAX_CAPACITY 128u
 #define ANOMALY_NTE_METRICS_SERVICE_V1_ID "anomaly.nte.metrics"
@@ -886,6 +888,16 @@ typedef struct AnomalyNteSkillInvocationServiceV1 {
         void* user, const AnomalyNteSkillInvocationRequestV1* request,
         AnomalyNteSkillInvocationResultV1* result);
 } AnomalyNteSkillInvocationServiceV1;
+
+// Verified native normal-attack input bridge. The Host resolves and validates
+// HTPlayerController::ActivateAbilityFromID / ReleaseAbilityFromID and the
+// current DT_AbilityInput::MeleeAtack row before invoking the game.
+typedef struct AnomalyNteAttackInputServiceV1 {
+    uint32_t struct_size; uint32_t service_version; void* user;
+    // Valid only from the Host Game callback domain. The Host returns OK only
+    // after the reflected input bridge has been validated and invoked.
+    AnomalyStatusV1 (ANOMALY_CALL *activate_melee)(void* user);
+} AnomalyNteAttackInputServiceV1;
 
 // Sampling metrics describe Host work, not a per-plugin traversal. The active Profile's
 // feature matrix remains available through AnomalyNteBuildServiceV1::feature_state. A page
