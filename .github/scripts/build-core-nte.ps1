@@ -52,6 +52,17 @@ if ($null -eq $top) { throw 'LLVM-MinGW archive root not found.' }
 $bin = (Join-Path $top.FullName 'bin').Replace('\','/')
 $env:PATH = $bin + ';' + $env:PATH
 
+$cmakeLists = Get-Content 'CMakeLists.txt' -Raw
+# The repository CMake uses MSVC-style flags globally. The supplied LLVM-MinGW
+# clang++ driver is GNU-mode, so translate only build-driver switches here.
+$cmakeLists = $cmakeLists.Replace('/W4 /permissive- /EHsc', '-Wall -Wextra -fexceptions')
+$cmakeLists = $cmakeLists.Replace('/W3 /EHsc', '-Wall -fexceptions')
+$cmakeLists = $cmakeLists.Replace('/Zc:threadSafeInit-', '-fno-threadsafe-statics')
+$cmakeLists = $cmakeLists.Replace('/utf-8', '-finput-charset=UTF-8 -fexec-charset=UTF-8')
+$cmakeLists = $cmakeLists.Replace('PRIVATE /w', 'PRIVATE -w')
+Set-Content 'CMakeLists.txt' $cmakeLists -NoNewline -Encoding utf8
+Write-Host 'Translated MSVC compile flags for LLVM-MinGW GNU mode.'
+
 $build = Join-Path $env:GITHUB_WORKSPACE '.build/core-llvm'
 if (Test-Path $build) { Remove-Item $build -Recurse -Force }
 
