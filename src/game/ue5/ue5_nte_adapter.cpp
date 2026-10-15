@@ -105,7 +105,7 @@ std::array<std::uint8_t, 32> Sha256(std::string_view input) {
 
 bool IsCoreDebugKeyValid(std::string_view candidate) noexcept {
     if (candidate.size() != 64U) return false;
-    // Stable DEBUG key digest. Preserve unchanged across maintenance releases unless the user explicitly requests rotation.
+    // Core-only SHA-256 verification. Never log or expose the submitted key.
     constexpr std::array<std::uint8_t, 32> expected{
         0xe7U, 0x1aU, 0xdeU, 0x1aU, 0xcfU, 0xf9U, 0xc7U, 0x39U,
         0xccU, 0x17U, 0x59U, 0x72U, 0xfaU, 0xf6U, 0x0eU, 0x2bU,
@@ -113,11 +113,13 @@ bool IsCoreDebugKeyValid(std::string_view candidate) noexcept {
         0x2bU, 0xafU, 0x8cU, 0x94U, 0x23U, 0xb7U, 0x6fU, 0x85U
     };
     try {
-        const auto actual = Sha256(candidate);
+        auto actual = Sha256(candidate);
         std::uint8_t difference = 0U;
         for (std::size_t i = 0; i < actual.size(); ++i)
             difference = static_cast<std::uint8_t>(difference | (actual[i] ^ expected[i]));
-        return difference == 0U;
+        const bool accepted = difference == 0U;
+        SecureZeroMemory(actual.data(), actual.size());
+        return accepted;
     } catch (...) {
         // Allocation/validation errors fail closed: they never authorize fine speed tuning.
         return false;
