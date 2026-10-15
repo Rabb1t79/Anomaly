@@ -8824,7 +8824,7 @@ struct Ue5NteAdapter::State {
         vehicle_fine_speed_authorized = true;
         // A valid key never auto-enables the fine slider; a separate explicit toggle is required.
         vehicle_fine_speed_tuning_enabled = false;
-        return Status(ANOMALY_STATUS_V1_OK, "Core accepted the fixed DEBUG key; fine tuning remains disabled");
+        return Status(ANOMALY_STATUS_V1_OK, "Core accepted DEBUG-key authorization; fine tuning remains disabled");
     }
 
     AnomalyStatusV1 VehicleSetFineSpeedTuningEnabled(std::uint32_t enabled) noexcept {
