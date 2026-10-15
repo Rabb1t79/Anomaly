@@ -430,7 +430,7 @@ target_compile_definitions(
 target_compile_options(anomaly_adapter_services PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
     anomaly_adapter_services
-    PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend anomaly_ue5_ftext Crypt32)
+    PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend anomaly_ue5_ftext)
 
 add_library(anomaly_websocket_server STATIC src/platform/windows/websocket_server.cpp)
 target_include_directories(anomaly_websocket_server PUBLIC include)
