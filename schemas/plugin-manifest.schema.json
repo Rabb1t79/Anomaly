@@ -40,7 +40,10 @@
     },
     "audience": {
       "type": "string",
-      "enum": ["user", "developer"]
+      "enum": [
+        "user",
+        "developer"
+      ]
     },
     "entry": {
       "type": "string",
@@ -51,7 +54,11 @@
     "api": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["major", "minMinor", "maxMinor"],
+      "required": [
+        "major",
+        "minMinor",
+        "maxMinor"
+      ],
       "properties": {
         "major": {
           "type": "integer",
@@ -91,7 +98,9 @@
     },
     "loadPhase": {
       "type": "string",
-      "enum": ["game-ready"]
+      "enum": [
+        "game-ready"
+      ]
     },
     "dependencies": {
       "type": "array",
@@ -171,7 +180,10 @@
     "pluginDependency": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "version"],
+      "required": [
+        "id",
+        "version"
+      ],
       "properties": {
         "id": {
           "$ref": "#/definitions/qualifiedId"
@@ -187,7 +199,10 @@
     "serviceRequirement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "minVersion"],
+      "required": [
+        "id",
+        "minVersion"
+      ],
       "properties": {
         "id": {
           "$ref": "#/definitions/qualifiedId"
