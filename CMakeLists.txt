@@ -430,7 +430,7 @@ target_compile_definitions(
 target_compile_options(anomaly_adapter_services PRIVATE /W4 /permissive- /EHsc)
 target_link_libraries(
     anomaly_adapter_services
-    PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend anomaly_ue5_ftext)
+    PUBLIC anomaly_symbol_resolver anomaly_hook_manager anomaly_minhook_backend anomaly_ue5_ftext Crypt32)
 
 add_library(anomaly_websocket_server STATIC src/platform/windows/websocket_server.cpp)
 target_include_directories(anomaly_websocket_server PUBLIC include)
@@ -1164,6 +1164,11 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
         MANIFEST plugins/NteTeleport/manifest.json
         PACKAGE_NAME NteTeleport
         OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteTeleport")
+    anomaly_add_plugin(anomaly_builtin_nte_vehicle
+        SOURCES plugins/NteVehicle/plugin.cpp
+        MANIFEST plugins/NteVehicle/manifest.json
+        PACKAGE_NAME NteVehicle
+        OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/builtin-plugins/NteVehicle")
     anomaly_add_plugin(anomaly_builtin_nte_movement_hold TEST_PLUGIN
         SOURCES plugins/NteMovementHold/plugin.cpp
         MANIFEST plugins/NteMovementHold/manifest.json
@@ -1388,7 +1393,7 @@ if(ANOMALY_BUILD_BUILTIN_PLUGINS)
     # Test packages exist only when ANOMALY_BUILD_TEST_PLUGINS is on, so every list that
     # reaches their targets is built from the targets that actually exist.
     set(ANOMALY_BUILTIN_PLUGIN_TARGETS
-        anomaly_builtin_nte_position anomaly_builtin_nte_teleport
+        anomaly_builtin_nte_position anomaly_builtin_nte_teleport anomaly_builtin_nte_vehicle
         anomaly_builtin_entity_esp anomaly_builtin_pink_paw_heist_esp
         anomaly_builtin_fake_uid anomaly_builtin_camera_tools
         anomaly_builtin_camera_blur_fix anomaly_builtin_better_pose
@@ -1448,6 +1453,7 @@ anomaly_stage_platform_preview_plugin(anomaly_example_nte_inspector NteInspector
 anomaly_stage_platform_preview_plugin(anomaly_example_nte_combat_demo NteCombatDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_position NtePosition)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_teleport NteTeleport)
+anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_vehicle NteVehicle)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_navigation NteNavmeshDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_nte_pickup_demo NtePickupDemo)
 anomaly_stage_platform_preview_plugin(anomaly_builtin_entity_esp EntityESP)
