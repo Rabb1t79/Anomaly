@@ -259,6 +259,23 @@ Actor/Entity 快照。点击 **Export JSON** 会通过 Host storage 原子写出
 
 默认目标为 `dumper-7.dll`。把目标 DLL 放进 `Anomaly\plugins\DllLoader\` 后启用该插件即可加载；也可以在插件窗口输入包内相对路径或绝对路径。路径修改在渲染回调中只保存在内存，随后从 **Plugins** 页重载该插件，生命周期会先保存设置、释放旧 DLL，再加载新路径。将路径清空并重载可禁用 DLL 加载。
 
+
+### NTE Vehicle
+
+| | |
+| --- | --- |
+| **ID** | `anomaly.local.nte-vehicle` |
+| **作用** | 提供当前驾驶载具快照、载具目录和召唤、当前载具车速倍率/发动机扭矩/车轮摩擦调校，以及已加载非玩家载具的倍率控制。 |
+| **依赖服务** | `anomaly.ui`、`anomaly.nte.vehicle` v5、`anomaly.nte.player` |
+| **需要 Profile** | 是；只有活动 Profile 的原生符号、布局校验、Game 线程和反射绑定全部通过时，Core 才发布载具服务。 |
+
+精细车速调整默认锁定，输入密钥不会自动启用倍率。首次配置私有校验文件时，请在仓库根目录运行：
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\\tools\\setup-vehicle-debug-key.ps1`
+
+脚本会隐藏输入并将密钥的 SHA-256 校验材料用当前 Windows 用户的 DPAPI 保护后写入
+`%LOCALAPPDATA%\\Anomaly\\vehicle-debug-key.dat`。请自行选择并保管 64 位十六进制密钥；不要将本机数据文件或密钥放进仓库、PR、运行包或日志。未配置或无法解密校验文件时，Core 会拒绝解锁并继续保持锁定。
+
 ### Time Accel
 
 | | |
