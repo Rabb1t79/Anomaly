@@ -87,7 +87,7 @@ const Service* QueryService(const AnomalyHostApiV1* host,
     return static_cast<const Service*>(table);
 }
 
-// 使用可移植 SHA-256 校验 DEBUG 解锁密钥；插件二进制只保存摘要，不保存密钥明文。
+// Key verification is Core-owned; the plugin never embeds a key or expected verifier digest.
 void ClearSensitiveBuffer(char* data, std::size_t size) noexcept {
     if (data == nullptr) return;
     volatile char* writable = data;
