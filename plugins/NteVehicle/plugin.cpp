@@ -13,14 +13,14 @@
 #include <cctype>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 namespace {
 
-// 载具插件的默认倍率策略：未解锁 DEBUG 时固定 10x。
+// 非 DEBUG 状态下的倍率策略：固定 10x；所有精细倍率路径均在调用 Host 前再次校验。
 constexpr float kLockedSpeedRatio = 10.0F;
 constexpr float kFineSpeedRatioMin = 0.50F;
 constexpr float kFineSpeedRatioMax = 10.0F;
-constexpr float kSpeedReferenceKmh = 70.0F;
 
 struct Snapshot {
     std::uint32_t flags{};
@@ -31,6 +31,14 @@ struct Snapshot {
     std::uint64_t vehicle_entity_id{};
     std::string vehicle_class_name;
     std::string vehicle_snapshot_status{"Host 尚未返回当前驾驶载具状态"};
+};
+
+struct CustomizationOption {
+    std::string id;
+    std::string label;
+    std::uint32_t kind{};
+    std::uint32_t module_type{};
+    bool is_default{};
 };
 
 struct Context {
@@ -48,6 +56,14 @@ struct Context {
     std::vector<std::string> vehicle_ids;
     std::vector<std::string> vehicle_labels;
     std::uint64_t catalog_tick{};
+    bool customization_page{};
+    std::string customization_vehicle_id;
+    std::string customization_skin_id;
+    std::string customization_status{"尚未读取当前车型的改装数据"};
+    std::vector<CustomizationOption> customization_options;
+    std::vector<std::pair<std::uint32_t, std::string>> selected_module_overrides;
+    std::uint64_t customization_catalog_tick{};
+    std::atomic_bool refresh_customization_requested{};
     std::atomic_bool refresh_catalog_requested{};
     std::atomic_bool apply_speed{};
     std::atomic_bool apply_torque{};
@@ -55,9 +71,9 @@ struct Context {
     std::atomic_bool apply_other_torque{};
     std::atomic_bool reset{};
     std::atomic_bool summon{};
+    std::atomic_bool summon_customized{};
     std::atomic_bool friction_toggle{};
     std::atomic_bool started{};
-    std::atomic_bool stop_restore_requested{};
     float speed_ratio{1.0F};
     float engine_torque_ratio{1.0F};
     float other_speed_ratio{1.0F};
@@ -89,138 +105,83 @@ const Service* QueryService(const AnomalyHostApiV1* host,
     return static_cast<const Service*>(table);
 }
 
-void ClearSensitiveBuffer(char* data, std::size_t size) noexcept {
-    if (data == nullptr) return;
-    volatile char* writable = data;
-    for (std::size_t i = 0; i < size; ++i) writable[i] = '\0';
-}
-
-void ClearSensitiveString(std::string& value) noexcept {
-    if (!value.empty()) ClearSensitiveBuffer(value.data(), value.size());
-    value.clear();
-}
-
-struct SensitiveStringWiper final {
-    std::string& value;
-    ~SensitiveStringWiper() { ClearSensitiveString(value); }
-};
-
-struct SensitiveBufferWiper final {
-    char* data;
-    std::size_t size;
-    ~SensitiveBufferWiper() { ClearSensitiveBuffer(data, size); }
-};
-
+// 使用可移植 SHA-256 校验 DEBUG 解锁密钥；插件二进制只保存摘要，不保存密钥明文。
 std::array<std::uint8_t, 32> Sha256(std::string_view input) {
     constexpr std::array<std::uint32_t, 64> k{
-        0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U,
-        0x923f82a4U, 0xab1c5ed5U, 0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
-        0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U, 0xe49b69c1U, 0xefbe4786U,
-        0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
-        0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U,
-        0x06ca6351U, 0x14292967U, 0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
-        0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U, 0xa2bfe8a1U, 0xa81a664bU,
-        0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
-        0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU,
-        0x5b9cca4fU, 0x682e6ff3U, 0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
-        0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U};
-    const auto rotr = [](std::uint32_t value, unsigned count) noexcept {
-        return (value >> count) | (value << (32U - count));
+        0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
+        0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
+        0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+        0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
+        0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
+        0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+        0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
+        0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U
+    };
+    const auto rotr = [](std::uint32_t v, unsigned n) noexcept {
+        return (v >> n) | (v << (32U - n));
     };
     std::vector<std::uint8_t> data;
-    struct SensitiveWiper final {
-        std::vector<std::uint8_t>& value;
-        ~SensitiveWiper() {
-            if (!value.empty())
-                ClearSensitiveBuffer(reinterpret_cast<char*>(value.data()), value.size());
-        }
-    } data_wiper{data};
     data.reserve(input.size() + 72U);
-    for (const unsigned char value : input) data.push_back(value);
+    for (const unsigned char c : input) data.push_back(c);
     const std::uint64_t bit_length = static_cast<std::uint64_t>(data.size()) * 8U;
     data.push_back(0x80U);
     while ((data.size() % 64U) != 56U) data.push_back(0U);
     for (int shift = 56; shift >= 0; shift -= 8)
         data.push_back(static_cast<std::uint8_t>((bit_length >> shift) & 0xffU));
 
-    std::array<std::uint32_t, 8> state{
+    std::array<std::uint32_t, 8> h{
         0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
-        0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U};
+        0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U
+    };
     for (std::size_t block = 0; block < data.size(); block += 64U) {
-        std::array<std::uint32_t, 64> words{};
+        std::array<std::uint32_t, 64> w{};
         for (std::size_t i = 0; i < 16U; ++i) {
-            const std::size_t offset = block + i * 4U;
-            words[i] = (static_cast<std::uint32_t>(data[offset]) << 24U) |
-                (static_cast<std::uint32_t>(data[offset + 1U]) << 16U) |
-                (static_cast<std::uint32_t>(data[offset + 2U]) << 8U) |
-                static_cast<std::uint32_t>(data[offset + 3U]);
+            const std::size_t p = block + i * 4U;
+            w[i] = (static_cast<std::uint32_t>(data[p]) << 24U) |
+                   (static_cast<std::uint32_t>(data[p + 1U]) << 16U) |
+                   (static_cast<std::uint32_t>(data[p + 2U]) << 8U) |
+                   static_cast<std::uint32_t>(data[p + 3U]);
         }
-        for (std::size_t i = 16U; i < words.size(); ++i) {
-            const std::uint32_t s0 = rotr(words[i - 15U], 7U) ^
-                rotr(words[i - 15U], 18U) ^ (words[i - 15U] >> 3U);
-            const std::uint32_t s1 = rotr(words[i - 2U], 17U) ^
-                rotr(words[i - 2U], 19U) ^ (words[i - 2U] >> 10U);
-            words[i] = words[i - 16U] + s0 + words[i - 7U] + s1;
+        for (std::size_t i = 16U; i < 64U; ++i) {
+            const std::uint32_t s0 = rotr(w[i - 15U], 7U) ^ rotr(w[i - 15U], 18U) ^ (w[i - 15U] >> 3U);
+            const std::uint32_t s1 = rotr(w[i - 2U], 17U) ^ rotr(w[i - 2U], 19U) ^ (w[i - 2U] >> 10U);
+            w[i] = w[i - 16U] + s0 + w[i - 7U] + s1;
         }
-        auto a = state[0];
-        auto b = state[1];
-        auto c = state[2];
-        auto d = state[3];
-        auto e = state[4];
-        auto f = state[5];
-        auto g = state[6];
-        auto h = state[7];
-        for (std::size_t i = 0; i < words.size(); ++i) {
+        auto a = h[0]; auto b = h[1]; auto c = h[2]; auto d = h[3];
+        auto e = h[4]; auto f = h[5]; auto g = h[6]; auto hh = h[7];
+        for (std::size_t i = 0; i < 64U; ++i) {
             const std::uint32_t s1 = rotr(e, 6U) ^ rotr(e, 11U) ^ rotr(e, 25U);
-            const std::uint32_t choice = (e & f) ^ (~e & g);
-            const std::uint32_t temp1 = h + s1 + choice + k[i] + words[i];
+            const std::uint32_t ch = (e & f) ^ (~e & g);
+            const std::uint32_t temp1 = hh + s1 + ch + k[i] + w[i];
             const std::uint32_t s0 = rotr(a, 2U) ^ rotr(a, 13U) ^ rotr(a, 22U);
-            const std::uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
-            const std::uint32_t temp2 = s0 + majority;
-            h = g;
-            g = f;
-            f = e;
-            e = d + temp1;
-            d = c;
-            c = b;
-            b = a;
-            a = temp1 + temp2;
+            const std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+            const std::uint32_t temp2 = s0 + maj;
+            hh = g; g = f; f = e; e = d + temp1;
+            d = c; c = b; b = a; a = temp1 + temp2;
         }
-        state[0] += a;
-        state[1] += b;
-        state[2] += c;
-        state[3] += d;
-        state[4] += e;
-        state[5] += f;
-        state[6] += g;
-        state[7] += h;
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
     }
     std::array<std::uint8_t, 32> digest{};
     for (std::size_t i = 0; i < digest.size(); ++i)
-        digest[i] = static_cast<std::uint8_t>(
-            (state[i / 4U] >> (24U - (i % 4U) * 8U)) & 0xffU);
-    ClearSensitiveBuffer(reinterpret_cast<char*>(state.data()), sizeof(state));
+        digest[i] = static_cast<std::uint8_t>((h[i / 4U] >> (24U - (i % 4U) * 8U)) & 0xffU);
     return digest;
 }
 
-bool IsDebugKeyValid(std::string_view candidate) noexcept {
+bool IsDebugKeyValid(std::string_view candidate) {
     if (candidate.size() != 64U) return false;
+    // Stable DEBUG key digest. Preserve unchanged across maintenance releases unless the user explicitly requests rotation.
     constexpr std::array<std::uint8_t, 32> expected{
         0xe7U, 0x1aU, 0xdeU, 0x1aU, 0xcfU, 0xf9U, 0xc7U, 0x39U,
         0xccU, 0x17U, 0x59U, 0x72U, 0xfaU, 0xf6U, 0x0eU, 0x2bU,
         0xbaU, 0x75U, 0xa7U, 0xdaU, 0x04U, 0xfaU, 0xbaU, 0xfdU,
-        0x2bU, 0xafU, 0x8cU, 0x94U, 0x23U, 0xb7U, 0x6fU, 0x85U};
-    try {
-        auto actual = Sha256(candidate);
-        std::uint8_t difference{};
-        for (std::size_t i = 0; i < actual.size(); ++i)
-            difference = static_cast<std::uint8_t>(difference | (actual[i] ^ expected[i]));
-        const bool accepted = difference == 0U;
-        ClearSensitiveBuffer(reinterpret_cast<char*>(actual.data()), actual.size());
-        return accepted;
-    } catch (...) {
-        return false;
-    }
+        0x2bU, 0xafU, 0x8cU, 0x94U, 0x23U, 0xb7U, 0x6fU, 0x85U
+    };
+    const auto actual = Sha256(candidate);
+    std::uint8_t difference = 0U;
+    for (std::size_t i = 0; i < actual.size(); ++i)
+        difference = static_cast<std::uint8_t>(difference | (actual[i] ^ expected[i]));
+    return difference == 0U;
 }
 
 void SetStatus(std::string text) {
@@ -361,6 +322,152 @@ void RefreshCatalogOnGameThread() {
     }
 }
 
+void RefreshCustomizationCatalogOnGameThread() {
+    const auto* vehicle = g_context.vehicle;
+    std::string selected_id;
+    {
+        std::scoped_lock lock(g_context.mutex);
+        selected_id = g_context.selected_vehicle_id;
+    }
+    const bool callbacks_available =
+        vehicle != nullptr &&
+        HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::customization_catalog_snapshot)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_catalog_snapshot)) &&
+        vehicle->customization_catalog_snapshot != nullptr &&
+        HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::customization_option_at)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_option_at)) &&
+        vehicle->customization_option_at != nullptr;
+    if (!callbacks_available || selected_id.empty()) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.customization_options.clear();
+        g_context.customization_vehicle_id.clear();
+        g_context.customization_skin_id.clear();
+        g_context.selected_module_overrides.clear();
+        g_context.customization_status = selected_id.empty()
+            ? "请先从召唤清单中选择车型"
+            : "当前 Core 未发布 V7 改装目录接口；请更新 Runtime";
+        return;
+    }
+
+    AnomalyNteVehicleCustomizationCatalogSnapshotV1 before{};
+    before.struct_size = sizeof(before);
+    const auto before_status = vehicle->customization_catalog_snapshot(
+        vehicle->user, anomaly::sdk::StringView(selected_id), &before);
+    if (before_status.code != ANOMALY_STATUS_V1_OK ||
+        (before.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
+        before.entry_count > 8192U) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.customization_options.clear();
+        g_context.customization_vehicle_id = selected_id;
+        g_context.customization_skin_id.clear();
+        g_context.selected_module_overrides.clear();
+        g_context.customization_status = StatusDescription("读取当前车型改装目录失败", before_status);
+        return;
+    }
+
+    std::vector<CustomizationOption> options;
+    options.reserve(before.entry_count);
+    for (std::uint32_t index = 0; index < before.entry_count; ++index) {
+        AnomalyNteVehicleCustomizationOptionV1 native_option{};
+        native_option.struct_size = sizeof(native_option);
+        const auto option_status = vehicle->customization_option_at(
+            vehicle->user, anomaly::sdk::StringView(selected_id), index, &native_option);
+        if (option_status.code != ANOMALY_STATUS_V1_OK ||
+            (native_option.flags & ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_VALID) == 0) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.customization_options.clear();
+            g_context.customization_vehicle_id = selected_id;
+            g_context.customization_skin_id.clear();
+            g_context.selected_module_overrides.clear();
+            g_context.customization_status = StatusDescription(
+                "读取改装目录选项失败（索引 " + std::to_string(index) + "）", option_status);
+            return;
+        }
+        const auto id_end = std::find(
+            std::begin(native_option.option_id), std::end(native_option.option_id), '\0');
+        const auto label_end = std::find(
+            std::begin(native_option.label), std::end(native_option.label), '\0');
+        if (id_end == std::end(native_option.option_id) ||
+            label_end == std::end(native_option.label) ||
+            id_end == std::begin(native_option.option_id) ||
+            (native_option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+             native_option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN) ||
+            (native_option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+             (native_option.module_type == 0 || native_option.module_type >= 27)) ||
+            (native_option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
+             native_option.module_type != 0)) {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.customization_options.clear();
+            g_context.customization_vehicle_id = selected_id;
+            g_context.customization_skin_id.clear();
+            g_context.selected_module_overrides.clear();
+            g_context.customization_status = "改装目录包含无效 ID、类型或未终止的 ABI 字符串";
+            return;
+        }
+        CustomizationOption option{};
+        option.id.assign(native_option.option_id, static_cast<std::size_t>(
+            id_end - std::begin(native_option.option_id)));
+        option.label.assign(native_option.label, static_cast<std::size_t>(
+            label_end - std::begin(native_option.label)));
+        option.kind = native_option.kind;
+        option.module_type = native_option.module_type;
+        option.is_default =
+            (native_option.flags & ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_DEFAULT) != 0;
+        options.push_back(std::move(option));
+    }
+
+    AnomalyNteVehicleCustomizationCatalogSnapshotV1 after{};
+    after.struct_size = sizeof(after);
+    const auto after_status = vehicle->customization_catalog_snapshot(
+        vehicle->user, anomaly::sdk::StringView(selected_id), &after);
+    if (after_status.code != ANOMALY_STATUS_V1_OK ||
+        (after.flags & ANOMALY_NTE_VEHICLE_CATALOG_V1_VALID) == 0 ||
+        after.sequence != before.sequence || after.entry_count != options.size()) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.customization_options.clear();
+        g_context.customization_vehicle_id = selected_id;
+        g_context.customization_skin_id.clear();
+        g_context.selected_module_overrides.clear();
+        g_context.customization_status =
+            "读取改装目录期间车型数据发生变化；请重新打开「改造清单」";
+        return;
+    }
+
+    std::string default_skin;
+    for (const auto& option : options) {
+        if (option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
+            option.is_default) {
+            default_skin = option.id;
+            break;
+        }
+    }
+    {
+        std::scoped_lock lock(g_context.mutex);
+        if (selected_id != g_context.selected_vehicle_id) return;
+        g_context.customization_options = std::move(options);
+        g_context.customization_vehicle_id = selected_id;
+        g_context.customization_skin_id = std::move(default_skin);
+        g_context.selected_module_overrides.clear();
+        g_context.customization_catalog_tick = after.sequence;
+        const auto module_count = std::ranges::count_if(
+            g_context.customization_options, [](const CustomizationOption& option) {
+                return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE;
+            });
+        const auto skin_count = std::ranges::count_if(
+            g_context.customization_options, [](const CustomizationOption& option) {
+                return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN;
+            });
+        g_context.customization_status = "已读取该车型实时改装选项：模块 " +
+            std::to_string(module_count) + " 项，涂装 " + std::to_string(skin_count) +
+            " 项；未选择的模块槽位沿用游戏数据表默认配置";
+        if (g_context.customization_skin_id.empty()) {
+            g_context.customization_status += "；该车型没有可自动识别的默认涂装，请手动选择涂装后召唤";
+        }
+    }
+}
+
 void Update() {
     if (!g_context.vehicle || !g_context.started.load(std::memory_order_acquire)) return;
 
@@ -398,9 +505,20 @@ void Update() {
             std::scoped_lock lock(g_context.mutex);
             g_context.selected_vehicle_id = pending_vehicle_id;
             g_context.status = "已选择载具：" + pending_vehicle_id;
+            if (g_context.customization_page) {
+                g_context.customization_vehicle_id.clear();
+                g_context.customization_options.clear();
+                g_context.customization_skin_id.clear();
+                g_context.selected_module_overrides.clear();
+                g_context.refresh_customization_requested.store(true, std::memory_order_release);
+            }
         } else {
             SetStatus(StatusDescription("载具选择失败", status));
         }
+    }
+
+    if (g_context.refresh_customization_requested.exchange(false, std::memory_order_acq_rel)) {
+        RefreshCustomizationCatalogOnGameThread();
     }
 
     bool catalog_loaded{};
@@ -448,10 +566,20 @@ void Update() {
     }
 
     if (g_context.reset.exchange(false, std::memory_order_acq_rel)) {
+        const bool has_core_switch =
+            HasField<AnomalyNteVehicleServiceV1,
+                decltype(AnomalyNteVehicleServiceV1::set_fine_speed_tuning_enabled)>(
+                    g_context.vehicle,
+                    offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)) &&
+            g_context.vehicle->set_fine_speed_tuning_enabled != nullptr;
+        if (has_core_switch) {
+            static_cast<void>(g_context.vehicle->set_fine_speed_tuning_enabled(
+                g_context.vehicle->user, 0U));
+        }
         const auto status = g_context.vehicle->reset(g_context.vehicle->user);
         {
             std::scoped_lock lock(g_context.mutex);
-            // 手动恢复按钮保持插件的启动策略：恢复原生参数后再应用默认 10x。
+            // Reset 不能成为绕过锁定倍率的后门；重置后关闭精细模式并恢复固定 10x。
             g_context.fine_speed_tuning_enabled = false;
             g_context.speed_ratio = kLockedSpeedRatio;
         }
@@ -474,13 +602,8 @@ void Update() {
                 g_context.speed_ratio = kLockedSpeedRatio;
             }
         }
-        AnomalyNteVehicleSpeedTargetV1 request{};
-        request.struct_size = sizeof(request);
-        request.scope = ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT;
-        request.top_speed_kmh = ratio * kSpeedReferenceKmh;
-        request.minimum_speed_kmh = request.top_speed_kmh;
-        const auto status = g_context.vehicle->set_speed_target(
-            g_context.vehicle->user, &request);
+        const auto status = g_context.vehicle->set_top_speed_ratio(
+            g_context.vehicle->user, ratio);
         if (status.code == ANOMALY_STATUS_V1_OK) {
             SetStatus("当前车速与最高车速上限均已应用：" + std::to_string(ratio) + "x");
         } else if (status.message.data != nullptr && status.message.size != 0) {
@@ -527,17 +650,37 @@ void Update() {
             ratio = g_context.other_speed_ratio;
             floor_ratio = g_context.other_speed_floor_ratio;
         }
-        floor_ratio = (std::min)(floor_ratio, ratio);
-        AnomalyNteVehicleSpeedTargetV1 request{};
-        request.struct_size = sizeof(request);
-        request.scope = ANOMALY_NTE_VEHICLE_SPEED_TARGET_OTHER_LOADED;
-        request.top_speed_kmh = ratio * kSpeedReferenceKmh;
-        request.minimum_speed_kmh = floor_ratio * kSpeedReferenceKmh;
-        const auto status = g_context.vehicle->set_speed_target(
-            g_context.vehicle->user, &request);
-        SetStatus(status.code == ANOMALY_STATUS_V1_OK
-            ? StatusDescription("非玩家车辆目标速度与下限修改完成", status)
-            : StatusDescription("非玩家车辆目标速度修改未完全成功", status));
+        const bool floor_available =
+            HasField<AnomalyNteVehicleServiceV1,
+                decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_min_speed_ratio)>(
+                    g_context.vehicle,
+                    offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_min_speed_ratio)) &&
+            g_context.vehicle->set_other_vehicles_min_speed_ratio != nullptr;
+        if (!floor_available) {
+            SetStatus("非玩家车辆最低车速倍率不可用：Host Runtime 未发布扩展接口");
+        } else {
+            const auto floor_status = g_context.vehicle->set_other_vehicles_min_speed_ratio(
+                g_context.vehicle->user, floor_ratio);
+            if (floor_status.code != ANOMALY_STATUS_V1_OK) {
+                SetStatus(StatusDescription("非玩家车辆最低车速倍率设置失败", floor_status));
+            } else {
+                const bool available =
+                    HasField<AnomalyNteVehicleServiceV1,
+                        decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_top_speed_ratio)>(
+                            g_context.vehicle,
+                            offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) &&
+                    g_context.vehicle->set_other_vehicles_top_speed_ratio != nullptr;
+                if (!available) {
+                    SetStatus("非玩家车辆速率倍率不可用：Host Runtime 未发布 Vehicle V4 接口");
+                } else {
+                    const auto status = g_context.vehicle->set_other_vehicles_top_speed_ratio(
+                        g_context.vehicle->user, ratio);
+                    SetStatus(status.code == ANOMALY_STATUS_V1_OK
+                        ? StatusDescription("非玩家车辆速率与下限修改完成", status)
+                        : StatusDescription("非玩家车辆速率修改未完全成功", status));
+                }
+            }
+        }
     }
 
     if (g_context.apply_other_torque.exchange(false, std::memory_order_acq_rel)) {
@@ -563,17 +706,27 @@ void Update() {
         }
     }
 
-    if (g_context.summon.exchange(false, std::memory_order_acq_rel)) {
+    const bool summon_requested = g_context.summon.exchange(false, std::memory_order_acq_rel);
+    const bool summon_customized_requested = g_context.summon_customized.exchange(false, std::memory_order_acq_rel);
+    if (summon_requested || summon_customized_requested) {
         AnomalyNteVehicleSummonRequestV1 request{};
         request.struct_size = sizeof(request);
         request.flags = ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION |
             ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER;
+
         std::string selected_id;
         std::string selected_label;
+        std::string selected_skin_id;
+        std::string customization_vehicle_id;
+        std::vector<std::pair<std::uint32_t, std::string>> module_overrides;
+        std::vector<AnomalyNteVehicleModuleSelectionV1> module_selections;
         bool position_valid{};
         {
             std::scoped_lock lock(g_context.mutex);
             selected_id = g_context.selected_vehicle_id;
+            selected_skin_id = g_context.customization_skin_id;
+            customization_vehicle_id = g_context.customization_vehicle_id;
+            module_overrides = g_context.selected_module_overrides;
             position_valid = g_context.player_position_valid;
             const auto selected_index = std::ranges::find(g_context.vehicle_ids, selected_id);
             if (selected_index != g_context.vehicle_ids.end()) {
@@ -582,19 +735,50 @@ void Update() {
                     ? g_context.vehicle_labels[index] : selected_id;
             }
             if (position_valid) {
-                // The requested offset stays close to the player: X - 500, Y + 500, Z + 500.
+                // Keep the existing verified spawn position unchanged.
                 request.world_position[0] = g_context.player_snapshot.position[0] - 500.0;
                 request.world_position[1] = g_context.player_snapshot.position[1] + 500.0;
                 request.world_position[2] = g_context.player_snapshot.position[2] + 500.0;
             }
         }
+
         bool catalog_has_selection{};
         {
             std::scoped_lock lock(g_context.mutex);
             catalog_has_selection = !selected_id.empty() &&
                 std::ranges::find(g_context.vehicle_ids, selected_id) != g_context.vehicle_ids.end();
         }
-        if (!position_valid || !catalog_has_selection) {
+
+        std::string validation_error;
+        if (summon_customized_requested) {
+            if (customization_vehicle_id != selected_id) {
+                validation_error = "改装召唤失败：改造清单与当前选择的车型不一致，请重新打开清单";
+            } else if (selected_skin_id.empty()) {
+                validation_error = "改装召唤失败：尚未选择有效涂装";
+            } else {
+                request.flags |= ANOMALY_NTE_VEHICLE_SUMMON_V1_APPLY_CUSTOM_CONFIGURATION;
+                request.skin_id = anomaly::sdk::StringView(std::string_view(
+                    selected_skin_id.data(), selected_skin_id.size()));
+                module_selections.reserve(module_overrides.size());
+                for (const auto& override_entry : module_overrides) {
+                    AnomalyNteVehicleModuleSelectionV1 selection{};
+                    selection.struct_size = sizeof(selection);
+                    selection.module_type = override_entry.first;
+                    selection.module_id = anomaly::sdk::StringView(std::string_view(
+                        override_entry.second.data(), override_entry.second.size()));
+                    module_selections.push_back(selection);
+                }
+                request.module_selections = module_selections.empty()
+                    ? nullptr : module_selections.data();
+                request.module_selection_count =
+                    static_cast<std::uint32_t>(module_selections.size());
+            }
+        }
+
+        if (!validation_error.empty()) {
+            SetStatus(validation_error);
+            SetLastSummon(validation_error);
+        } else if (!position_valid || !catalog_has_selection) {
             const std::string reason = !position_valid
                 ? "召唤失败：玩家坐标当前无效"
                 : "召唤失败：当前选择未同步到 Host 载具目录";
@@ -612,13 +796,14 @@ void Update() {
                 const bool postcondition_verified =
                     !detail.empty() && detail.find(verified_prefix) == 0;
                 std::string result;
-                if (postcondition_verified) {
-                    // Successful summons stay silent; only failure or unverified states show a message.
+                if (postcondition_verified && summon_customized_requested) {
+                    result = "改装载具召唤成功：" + detail;
+                    SetStatus(result);
+                    SetLastSummon(result);
+                } else if (postcondition_verified) {
                     SetStatus({});
                     SetLastSummon({});
                 } else {
-                    // An OK status without the Core's explicit postcondition marker is not
-                    // proof that a new vehicle exists; keep this diagnostic visible.
                     result = "召唤状态未验证：" + label + " (" + selected_id +
                         ")；Host 返回 OK，但没有明确的实际生成/后置验证标记";
                     if (!detail.empty()) result += "；Host 信息：" + detail;
@@ -626,7 +811,8 @@ void Update() {
                     SetLastSummon(result);
                 }
             } else {
-                const auto reason = StatusDescription("召唤失败", status);
+                const auto reason = StatusDescription(
+                    summon_customized_requested ? "改装载具召唤失败" : "召唤失败", status);
                 SetStatus(reason);
                 SetLastSummon(reason);
             }
@@ -876,7 +1062,202 @@ void DrawSummonTab(
     if (DrawButtonEnabled(ui, "召唤", can_summon)) {
         g_context.summon.store(true, std::memory_order_release);
     }
+    DrawInlineGap(ui);
+    if (DrawButtonEnabled(ui, "改造清单", has_selected)) {
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.customization_page = true;
+            g_context.customization_vehicle_id.clear();
+            g_context.customization_options.clear();
+            g_context.customization_skin_id.clear();
+            g_context.selected_module_overrides.clear();
+            g_context.customization_status = "正在读取 " + selected + " 的实时改装目录";
+        }
+        g_context.refresh_customization_requested.store(true, std::memory_order_release);
+    }
+    DrawText(ui, "改造清单会读取所选车型实际可用的模块与涂装；未手动覆盖的模块槽位保留游戏默认配置。");
 }
+
+void DrawCustomizationTab(
+    const AnomalyUiServiceV1* ui,
+    const std::string& selected,
+    const std::vector<std::string>& ids,
+    const std::vector<std::string>& labels,
+    const std::vector<CustomizationOption>& options,
+    const std::vector<std::pair<std::uint32_t, std::string>>& module_overrides,
+    const std::string& customization_vehicle_id,
+    const std::string& skin_id,
+    const std::string& customization_status,
+    bool player_position_valid) {
+    const auto selected_index = std::ranges::find(ids, selected);
+    const bool has_selected = selected_index != ids.end();
+    std::string selected_label = selected;
+    if (has_selected) {
+        const auto index = static_cast<std::size_t>(selected_index - ids.begin());
+        if (index < labels.size() && !labels[index].empty()) selected_label = labels[index];
+    }
+    DrawText(ui, "改造清单 / " + selected_label);
+    if (DrawButtonEnabled(ui, "返回召唤清单", true)) {
+        std::scoped_lock lock(g_context.mutex);
+        g_context.customization_page = false;
+        return;
+    }
+    DrawInlineGap(ui);
+    if (DrawButtonEnabled(ui, "重新读取改装数据", true)) {
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.customization_vehicle_id.clear();
+            g_context.customization_options.clear();
+            g_context.customization_skin_id.clear();
+            g_context.selected_module_overrides.clear();
+            g_context.customization_status = "正在重新读取所选车型的改装目录";
+        }
+        g_context.refresh_customization_requested.store(true, std::memory_order_release);
+    }
+    DrawText(ui, customization_status);
+    if (!has_selected) {
+        DrawText(ui, "当前车型不在已读取的载具目录中，无法应用改装。");
+        return;
+    }
+    if (customization_vehicle_id != selected) {
+        DrawText(ui, "正在读取当前车型的改装选项；请等待数据加载完成后再召唤。");
+        return;
+    }
+    if (options.empty()) {
+        DrawText(ui, "没有取得可用的改装选项。请重新读取；若仍失败，请查看 Core 返回的目录校验诊断。");
+        return;
+    }
+
+    static constexpr std::array<std::string_view, 27> kModuleTypeNames{
+        "无", "发动机", "变速箱", "制动", "悬挂", "车身颜色模块",
+        "前包围", "侧裙", "后包围", "尾翼", "贴花", "轮毂",
+        "引擎盖", "车牌", "车顶", "轮胎", "附件", "限滑差速器 LSD",
+        "车身刚度", "Skin 模块", "内饰皮革颜色", "内饰缝线颜色",
+        "车辆铭牌", "轮胎烟雾", "轮胎痕迹", "拖钩", "ECU"
+    };
+    const auto override_for_type = [&](std::uint32_t module_type) -> std::string_view {
+        const auto found = std::ranges::find_if(module_overrides,
+            [module_type](const auto& entry) { return entry.first == module_type; });
+        return found == module_overrides.end()
+            ? std::string_view{} : std::string_view(found->second);
+    };
+    const auto draw_module_options = [&]() {
+        for (std::uint32_t type = 1; type < kModuleTypeNames.size(); ++type) {
+            bool has_options = false;
+            bool has_default = false;
+            for (const auto& option : options) {
+                if (option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE &&
+                    option.module_type == type) {
+                    has_options = true;
+                    has_default = has_default || option.is_default;
+                }
+            }
+            if (!has_options) continue;
+            DrawDivider(ui);
+            DrawText(ui, std::string(kModuleTypeNames[type]));
+            const std::string_view selected_option_id = override_for_type(type);
+            for (const auto& option : options) {
+                if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE ||
+                    option.module_type != type) continue;
+                const bool explicit_selected = !selected_option_id.empty() &&
+                    selected_option_id == option.id;
+                const bool default_selected = selected_option_id.empty() && option.is_default;
+                std::string button_label;
+                if (explicit_selected) button_label = "[已选] ";
+                else if (default_selected) button_label = "[默认] ";
+                else button_label = "选择 ";
+                button_label += option.label.empty() ? option.id : option.label;
+                button_label += " (" + option.id + ")##custom-module-" +
+                    std::to_string(type) + "-" + option.id;
+                if (ui->button(ui->user, anomaly::sdk::StringView(button_label), 0.0F, 0.0F)) {
+                    std::scoped_lock lock(g_context.mutex);
+                    auto& overrides = g_context.selected_module_overrides;
+                    if (option.is_default) {
+                        std::erase_if(overrides, [type](const auto& entry) {
+                            return entry.first == type;
+                        });
+                    } else {
+                        const auto found = std::ranges::find_if(overrides,
+                            [type](const auto& entry) { return entry.first == type; });
+                        if (found == overrides.end()) overrides.emplace_back(type, option.id);
+                        else found->second = option.id;
+                    }
+                    g_context.customization_status = "已更新 " +
+                        std::string(kModuleTypeNames[type]) + " 的选择；召唤时将提交给游戏原生改装组件";
+                }
+            }
+            if (has_default && !selected_option_id.empty()) {
+                const std::string reset_label =
+                    "恢复默认##custom-reset-module-" + std::to_string(type);
+                if (DrawButtonEnabled(ui, reset_label, true)) {
+                    std::scoped_lock lock(g_context.mutex);
+                    std::erase_if(g_context.selected_module_overrides, [type](const auto& entry) {
+                        return entry.first == type;
+                    });
+                    g_context.customization_status = "已恢复 " +
+                        std::string(kModuleTypeNames[type]) + " 的游戏默认模块";
+                }
+            }
+        }
+    };
+    const auto draw_skin_options = [&]() {
+        DrawDivider(ui);
+        DrawText(ui, "涂装");
+        bool has_default_skin = false;
+        for (const auto& option : options) {
+            if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN) continue;
+            has_default_skin = has_default_skin || option.is_default;
+            const bool current = skin_id == option.id;
+            std::string button_label = current ? "[当前] " : (option.is_default ? "[默认] " : "选择 ");
+            button_label += option.label.empty() ? option.id : option.label;
+            button_label += " (" + option.id + ")##custom-skin-" + option.id;
+            if (ui->button(ui->user, anomaly::sdk::StringView(button_label), 0.0F, 0.0F)) {
+                std::scoped_lock lock(g_context.mutex);
+                g_context.customization_skin_id = option.id;
+                g_context.customization_status = "已选择涂装：" + option.label + " (" + option.id + ")";
+            }
+        }
+        if (has_default_skin && !skin_id.empty()) {
+            if (DrawButtonEnabled(ui, "恢复默认涂装##custom-reset-skin", true)) {
+                const auto found = std::ranges::find_if(options, [](const CustomizationOption& option) {
+                    return option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
+                        option.is_default;
+                });
+                if (found != options.end()) {
+                    std::scoped_lock lock(g_context.mutex);
+                    g_context.customization_skin_id = found->id;
+                    g_context.customization_status = "已恢复游戏默认涂装：" + found->label;
+                }
+            }
+        }
+    };
+
+    const bool child_api_available =
+        UiFieldAvailable(ui, offsetof(AnomalyUiServiceV1, end_child),
+            sizeof(decltype(AnomalyUiServiceV1::end_child))) &&
+        ui->begin_child && ui->end_child;
+    if (child_api_available) {
+        const bool child_visible = ui->begin_child(ui->user,
+            anomaly::sdk::StringView("##vehicle-customization-options"), 0.0F, 350.0F, 0U) != 0;
+        if (child_visible) {
+            draw_skin_options();
+            draw_module_options();
+        }
+        ui->end_child(ui->user);
+    } else {
+        draw_skin_options();
+        draw_module_options();
+    }
+
+    DrawDivider(ui);
+    DrawText(ui, "仅手动选择的模块槽位会覆盖默认值；其他槽位使用游戏数据表的默认模块。");
+    const bool can_summon_customized = player_position_valid && has_selected &&
+        customization_vehicle_id == selected && !skin_id.empty();
+    if (DrawButtonEnabled(ui, "召唤改装车辆", can_summon_customized)) {
+        g_context.summon_customized.store(true, std::memory_order_release);
+    }
+}
+
 
 void DrawPerformanceTab(
     const AnomalyUiServiceV1* ui, const Snapshot& snap,
@@ -944,7 +1325,7 @@ void DrawPerformanceTab(
     DrawDivider(ui);
     DrawDivider(ui);
     DrawText(ui, "其他载具实例");
-    DrawText(ui, "插件按 70 km/h × 速度因子换算目标最高速");
+    DrawText(ui, "目标最高速 = 70 km/h × 速度因子");
     if (ui->slider_float(ui->user, anomaly::sdk::StringView("其他车辆速度倍率"),
                          &other_speed_ratio, 0.05F, 10.0F)) {
         std::scoped_lock lock(g_context.mutex);
@@ -955,7 +1336,7 @@ void DrawPerformanceTab(
         std::scoped_lock lock(g_context.mutex);
         g_context.other_speed_floor_ratio = other_speed_floor_ratio;
     }
-    if (ui->button(ui->user, anomaly::sdk::StringView("应用其他车辆目标速度与下限"), 0.0F, 0.0F)) {
+    if (ui->button(ui->user, anomaly::sdk::StringView("应用其他车辆倍率与下限"), 0.0F, 0.0F)) {
         g_context.apply_other_speed.store(true, std::memory_order_release);
     }
 
@@ -989,14 +1370,14 @@ void DrawDebugPanel(
     const std::string& status, const std::string& selected,
     std::size_t catalog_size, bool player_position_valid,
     bool fine_speed_tuning_enabled) {
-    DrawText(ui, "构建标记：NTE Vehicle 0.9.9 / 2026-10-14-debug-speed-gate-slider-restored");
-    DrawText(ui, "构建标记：manifest schema v2 / Plugin API v1 / Vehicle service v6");
+    DrawText(ui, "构建标记：NTE Vehicle 0.10.0 / 2026-10-20-selected-modification-summon");
+    DrawText(ui, "构建标记：manifest schema v2 / Plugin API v1 / Vehicle service v7");
     DrawText(ui, "Plugin ID：anomaly.local." + std::string("nte-vehicle"));
     DrawText(ui, "Manifest：schemaVersion=2 / entry=plugin.dll / loadPhase=game-ready / games=nte / builds=nte-*");
-    DrawText(ui, "Required services：anomaly.ui v1 / anomaly.nte.vehicle v6 / anomaly.nte.player v1");
-    DrawText(ui, "Capabilities：ui / nte-vehicle / nte-player-snapshot");
+    DrawText(ui, "Required services：anomaly.ui v1 / anomaly.nte.vehicle v7 / anomaly.nte.player v1");
+    DrawText(ui, "Capabilities：ui / nte-vehicle / nte-player-snapshot / per-vehicle-customization-catalog / selected-modification-summon");
     DrawText(ui, "创建日期：2026-10-14");
-    DrawText(ui, "修改状态：已包含界面精简、五项分页及 DEBUG 密钥门控；游戏内结果待实测");
+    DrawText(ui, "修改状态：已包含车型实时改装目录、模块/涂装选择与自定义召唤链路；游戏内结果待实测");
     DrawText(ui, "Host 状态：" + (status.empty() ? std::string("暂无状态消息") : status));
     // An empty diagnostic string means the Host snapshot callback returned OK.
     // Do not label this success path as "Host 未提供快照状态"; use the validity flag
@@ -1030,7 +1411,20 @@ void DrawDebugPanel(
     if (has_checkbox) {
         if (ui->checkbox(ui->user,
                 anomaly::sdk::StringView("启用车速精细倍率调整"), &fine_enabled) != 0) {
-            const bool enable = fine_enabled != 0;
+            const bool enable_requested = fine_enabled != 0;
+            const bool has_core_switch =
+                HasField<AnomalyNteVehicleServiceV1,
+                    decltype(AnomalyNteVehicleServiceV1::set_fine_speed_tuning_enabled)>(
+                        g_context.vehicle,
+                        offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)) &&
+                g_context.vehicle->set_fine_speed_tuning_enabled != nullptr;
+            AnomalyStatusV1 core_status = Status(ANOMALY_STATUS_V1_UNAVAILABLE);
+            if (has_core_switch) {
+                core_status = g_context.vehicle->set_fine_speed_tuning_enabled(
+                    g_context.vehicle->user, enable_requested ? 1U : 0U);
+            }
+            const bool enable = enable_requested &&
+                has_core_switch && core_status.code == ANOMALY_STATUS_V1_OK;
             {
                 std::scoped_lock lock(g_context.mutex);
                 g_context.fine_speed_tuning_enabled = enable;
@@ -1040,15 +1434,17 @@ void DrawDebugPanel(
             }
             fine_speed_tuning_enabled = enable;
             if (enable) {
-                SetStatus("已启用 DEBUG 车速精细调整；倍率可在 0.50x–10.0x 内调整");
+                SetStatus("Core 已启用 DEBUG 车速精细调整；倍率可在 0.50x–10.0x 内调整");
             } else {
-                // 关闭开关后插件恢复自己的锁定策略，并重新应用固定 10x。
+                // 关闭开关后 Core 和插件均恢复锁定策略，随后实际应用固定 10x。
                 g_context.apply_speed.store(true, std::memory_order_release);
-                SetStatus("DEBUG 车速精细调整已关闭；正在恢复固定 10.0x");
+                SetStatus(enable_requested
+                    ? "Core 未授权精细调整；倍率保持固定 10.0x"
+                    : "DEBUG 车速精细调整已关闭；正在恢复固定 10.0x");
                 fine_enabled = 0;
             }
         }
-        // 锁定的默认倍率仍由插件的应用路径执行。
+        // 精简界面：移除重复的启用/锁定说明；锁定策略仍由控件及 Core 授权逻辑执行。
     } else {
         DrawText(ui, "当前 UI Host 不支持开关控件；精细调整保持关闭，倍率固定为 10.0x。");
     }
@@ -1068,6 +1464,12 @@ void Draw(const AnomalyUiServiceV1* ui) {
     std::string last_summon;
     std::vector<std::string> ids;
     std::vector<std::string> labels;
+    std::vector<CustomizationOption> customization_options;
+    std::vector<std::pair<std::uint32_t, std::string>> module_overrides;
+    std::string customization_vehicle_id;
+    std::string customization_skin_id;
+    std::string customization_status;
+    bool customization_page{};
     float ratio;
     float torque_ratio;
     float other_speed_ratio;
@@ -1085,6 +1487,12 @@ void Draw(const AnomalyUiServiceV1* ui) {
         last_summon = g_context.last_summon;
         ids = g_context.vehicle_ids;
         labels = g_context.vehicle_labels;
+        customization_options = g_context.customization_options;
+        module_overrides = g_context.selected_module_overrides;
+        customization_vehicle_id = g_context.customization_vehicle_id;
+        customization_skin_id = g_context.customization_skin_id;
+        customization_status = g_context.customization_status;
+        customization_page = g_context.customization_page;
         ratio = g_context.speed_ratio;
         torque_ratio = g_context.engine_torque_ratio;
         other_speed_ratio = g_context.other_speed_ratio;
@@ -1140,29 +1548,56 @@ void Draw(const AnomalyUiServiceV1* ui) {
                 debug_key_buffer.data(), debug_key_buffer.size(), ANOMALY_UI_TEXT_INPUT_V1_PASSWORD);
             DrawInlineGap(ui);
             if (ui->button(ui->user, anomaly::sdk::StringView("解锁 Debug"), 0.0F, 0.0F)) {
-                std::string candidate_owned(debug_key_buffer.data());
-                SensitiveStringWiper candidate_wiper{candidate_owned};
-                SensitiveBufferWiper input_wiper{
-                    debug_key_buffer.data(), debug_key_buffer.size()};
-                const bool candidate_empty = candidate_owned.empty();
-                const bool key_accepted = !candidate_empty && IsDebugKeyValid(candidate_owned);
-                ClearSensitiveString(candidate_owned);
-                ClearSensitiveBuffer(debug_key_buffer.data(), debug_key_buffer.size());
-                if (key_accepted) {
+                // Own the entered text for the complete local/Core validation call. The UI
+                // buffer is cleared only after the Core callback returns, and the same
+                // byte range is passed to both checks.
+                const std::string candidate_owned(debug_key_buffer.data());
+                const bool valid = IsDebugKeyValid(candidate_owned);
+                bool core_key_accepted = false;
+                std::uint32_t core_status_code = ANOMALY_STATUS_V1_FAILED;
+                std::string core_rejection_message;
+                const bool has_core_authorizer =
+                    HasField<AnomalyNteVehicleServiceV1,
+                        decltype(AnomalyNteVehicleServiceV1::authorize_fine_speed_tuning)>(
+                            g_context.vehicle,
+                            offsetof(AnomalyNteVehicleServiceV1, authorize_fine_speed_tuning)) &&
+                    g_context.vehicle->authorize_fine_speed_tuning != nullptr;
+                if (valid && has_core_authorizer) {
+                    const auto core_status = g_context.vehicle->authorize_fine_speed_tuning(
+                        g_context.vehicle->user,
+                        anomaly::sdk::StringView(std::string_view(
+                            candidate_owned.data(), candidate_owned.size())));
+                    core_status_code = core_status.code;
+                    core_key_accepted = core_status.code == ANOMALY_STATUS_V1_OK;
+                    if (!core_key_accepted && core_status.message.data != nullptr &&
+                        core_status.message.size != 0) {
+                        core_rejection_message.assign(
+                            core_status.message.data, core_status.message.size);
+                    }
+                }
+                std::fill(debug_key_buffer.begin(), debug_key_buffer.end(), '\0');
+                if (valid && core_key_accepted) {
                     {
                         std::scoped_lock lock(g_context.mutex);
                         g_context.debug_unlocked = true;
+                        // Both local and Core fine-tuning switches remain off until the checkbox is enabled.
                         g_context.fine_speed_tuning_enabled = false;
                         g_context.speed_ratio = kLockedSpeedRatio;
                     }
                     debug_unlocked = true;
                     fine_speed_tuning_enabled = false;
                     ratio = kLockedSpeedRatio;
-                    debug_unlock_feedback = "密钥验证通过；精细车速调整仍默认关闭，可在 Debug 中单独启用";
-                } else if (candidate_empty) {
-                    debug_unlock_feedback = "请输入私有 Debug 密钥；精细倍率保持锁定";
+                    debug_unlock_feedback = "Core 密钥验证通过；精细车速调整仍默认关闭，可在 Debug 中单独启用";
+                } else if (valid && !has_core_authorizer) {
+                    debug_unlock_feedback = "当前 Core 缺少 V5 授权接口；精细倍率保持锁定，请更新 Runtime";
+                } else if (valid) {
+                    debug_unlock_feedback = core_rejection_message.empty()
+                        ? ("Core 拒绝密钥（状态码 " + std::to_string(core_status_code) +
+                            "）；精细倍率保持锁定")
+                        : ("Core 拒绝密钥：" + core_rejection_message +
+                            "；精细倍率保持锁定");
                 } else {
-                    debug_unlock_feedback = "Debug 密钥无效；精细倍率保持锁定";
+                    debug_unlock_feedback = "密钥无效";
                 }
             }
         } else {
@@ -1173,7 +1608,13 @@ void Draw(const AnomalyUiServiceV1* ui) {
     }
 
     if (active_tab == 0) {
-        DrawSummonTab(ui, selected, ids, labels, last_summon, player_position_valid);
+        if (customization_page) {
+            DrawCustomizationTab(ui, selected, ids, labels, customization_options,
+                module_overrides, customization_vehicle_id, customization_skin_id,
+                customization_status, player_position_valid);
+        } else {
+            DrawSummonTab(ui, selected, ids, labels, last_summon, player_position_valid);
+        }
     } else if (active_tab == 1) {
         DrawPerformanceTab(ui, snap, ratio, debug_unlocked, fine_speed_tuning_enabled,
             torque_ratio, other_speed_ratio, other_speed_floor_ratio, other_torque_ratio);
@@ -1193,7 +1634,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
         host, ANOMALY_NTE_PLAYER_SERVICE_V1_ID, ANOMALY_NTE_PLAYER_SERVICE_V1_VERSION);
     if (!vehicle || !player) return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
 
-    if (!vehicle->snapshot ||
+    if (!vehicle->snapshot || !vehicle->set_top_speed_ratio ||
         !vehicle->summon_vehicle || !vehicle->set_wheel_friction_enabled ||
         !vehicle->reset || !vehicle->catalog_snapshot || !vehicle->vehicle_id_at ||
         !vehicle->set_summon_vehicle_id ||
@@ -1206,13 +1647,37 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
                 vehicle, offsetof(AnomalyNteVehicleServiceV1, catalog_label_at)) ||
         !vehicle->catalog_label_at ||
         !HasField<AnomalyNteVehicleServiceV1,
-            decltype(AnomalyNteVehicleServiceV1::set_speed_target)>(
-                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_speed_target)) ||
-        !vehicle->set_speed_target ||
+            decltype(AnomalyNteVehicleServiceV1::authorize_fine_speed_tuning)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, authorize_fine_speed_tuning)) ||
+        !vehicle->authorize_fine_speed_tuning ||
+        !HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::set_fine_speed_tuning_enabled)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_fine_speed_tuning_enabled)) ||
+        !vehicle->set_fine_speed_tuning_enabled ||
+        !HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::revoke_fine_speed_authorization)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, revoke_fine_speed_authorization)) ||
+        !vehicle->revoke_fine_speed_authorization ||
+        !HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_top_speed_ratio)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_top_speed_ratio)) ||
+        !vehicle->set_other_vehicles_top_speed_ratio ||
+        !HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_min_speed_ratio)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_min_speed_ratio)) ||
+        !vehicle->set_other_vehicles_min_speed_ratio ||
         !HasField<AnomalyNteVehicleServiceV1,
             decltype(AnomalyNteVehicleServiceV1::set_other_vehicles_engine_torque_ratio)>(
                 vehicle, offsetof(AnomalyNteVehicleServiceV1, set_other_vehicles_engine_torque_ratio)) ||
-        !vehicle->set_other_vehicles_engine_torque_ratio || !player->snapshot) {
+        !vehicle->set_other_vehicles_engine_torque_ratio ||
+        !HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::customization_catalog_snapshot)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_catalog_snapshot)) ||
+        !vehicle->customization_catalog_snapshot ||
+        !HasField<AnomalyNteVehicleServiceV1,
+            decltype(AnomalyNteVehicleServiceV1::customization_option_at)>(
+                vehicle, offsetof(AnomalyNteVehicleServiceV1, customization_option_at)) ||
+        !vehicle->customization_option_at || !player->snapshot) {
         return Status(ANOMALY_STATUS_V1_UNAVAILABLE);
     }
 
@@ -1225,9 +1690,10 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.apply_other_torque.store(false, std::memory_order_release);
     g_context.reset.store(false, std::memory_order_release);
     g_context.summon.store(false, std::memory_order_release);
+    g_context.summon_customized.store(false, std::memory_order_release);
     g_context.friction_toggle.store(false, std::memory_order_release);
-    g_context.stop_restore_requested.store(false, std::memory_order_release);
     g_context.refresh_catalog_requested.store(false, std::memory_order_release);
+    g_context.refresh_customization_requested.store(false, std::memory_order_release);
     g_context.speed_ratio = kLockedSpeedRatio;
     g_context.engine_torque_ratio = 1.0F;
     g_context.other_speed_ratio = 1.0F;
@@ -1242,6 +1708,13 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
     g_context.catalog_filter.clear();
     g_context.vehicle_ids.clear();
     g_context.vehicle_labels.clear();
+    g_context.customization_page = false;
+    g_context.customization_vehicle_id.clear();
+    g_context.customization_skin_id.clear();
+    g_context.customization_status = "尚未读取当前车型的改装数据";
+    g_context.customization_options.clear();
+    g_context.selected_module_overrides.clear();
+    g_context.customization_catalog_tick = 0;
     g_context.last_summon.clear();
     g_context.status = "正在读取 Host 验证的运行时 Vehicle 目录";
     g_context.player_position_valid = false;
@@ -1254,49 +1727,43 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
 AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.refresh_catalog_requested.store(true, std::memory_order_release);
-    g_context.stop_restore_requested.store(false, std::memory_order_release);
-    // Every start re-applies the plugin-owned 10x policy.
+    // Each plugin start re-applies the locked 10x policy until DEBUG + fine-tune switch are both enabled.
     g_context.apply_speed.store(true, std::memory_order_release);
     g_context.started.store(true, std::memory_order_release);
     return anomaly::sdk::Ok();
 }
 
-void RequestStopRestore() noexcept {
-    if (g_context.stop_restore_requested.exchange(true, std::memory_order_acq_rel)) return;
-    if (g_context.vehicle && g_context.vehicle->reset)
-        static_cast<void>(g_context.vehicle->reset(g_context.vehicle->user));
-}
-
-void ClearPendingOperations() noexcept {
-    g_context.apply_speed.store(false, std::memory_order_release);
-    g_context.apply_torque.store(false, std::memory_order_release);
-    g_context.apply_other_speed.store(false, std::memory_order_release);
-    g_context.apply_other_torque.store(false, std::memory_order_release);
-    g_context.reset.store(false, std::memory_order_release);
-    g_context.summon.store(false, std::memory_order_release);
-    g_context.friction_toggle.store(false, std::memory_order_release);
-    g_context.refresh_catalog_requested.store(false, std::memory_order_release);
-}
-
 AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.started.store(false, std::memory_order_release);
-    ClearPendingOperations();
+    if (g_context.vehicle) {
+        if (g_context.vehicle->set_fine_speed_tuning_enabled)
+            static_cast<void>(g_context.vehicle->set_fine_speed_tuning_enabled(
+                g_context.vehicle->user, 0U));
+        if (g_context.vehicle->revoke_fine_speed_authorization)
+            static_cast<void>(g_context.vehicle->revoke_fine_speed_authorization(
+                g_context.vehicle->user));
+    }
     {
         std::scoped_lock lock(g_context.mutex);
         g_context.debug_unlocked = false;
         g_context.fine_speed_tuning_enabled = false;
         g_context.speed_ratio = kLockedSpeedRatio;
     }
-    RequestStopRestore();
     return anomaly::sdk::Ok();
 }
 
 void ANOMALY_CALL Unload(void* plugin_context) {
     if (plugin_context != &g_context) return;
     g_context.started.store(false, std::memory_order_release);
-    ClearPendingOperations();
-    RequestStopRestore();
+    if (g_context.vehicle) {
+        if (g_context.vehicle->set_fine_speed_tuning_enabled)
+            static_cast<void>(g_context.vehicle->set_fine_speed_tuning_enabled(
+                g_context.vehicle->user, 0U));
+        if (g_context.vehicle->revoke_fine_speed_authorization)
+            static_cast<void>(g_context.vehicle->revoke_fine_speed_authorization(
+                g_context.vehicle->user));
+    }
     g_context.vehicle = nullptr;
     g_context.player = nullptr;
 }
@@ -1319,6 +1786,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.local.nte-vehicle"),
         anomaly::sdk::StringView("载具控制"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.9.9"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.10.0"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }
