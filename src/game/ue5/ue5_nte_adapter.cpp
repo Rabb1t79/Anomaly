@@ -10734,14 +10734,14 @@ struct Ue5NteAdapter::State {
 
     [[nodiscard]] bool ApplyVehicleConfigurationLocked(
         const std::uintptr_t spawned_vehicle,
-        const VehicleBuildConfiguration& saved,
+        const VehicleBuildConfiguration& configuration,
         std::size_t& configured_module_count,
         std::string& failure) noexcept {
         configured_module_count = 0;
         failure.clear();
         try {
-            if (spawned_vehicle == 0 || saved.vehicle_id == 0 ||
-                saved.module_ids.size() > 128U || saved.skin_id == 0) {
+            if (spawned_vehicle == 0 || configuration.vehicle_id == 0 ||
+                configuration.module_ids.size() > 128U || configuration.skin_id == 0) {
                 failure = "生成的车辆或用户自定义配置参数无效";
                 return false;
             }
@@ -10858,10 +10858,10 @@ struct Ue5NteAdapter::State {
             static_assert(sizeof(NativeArrayArgument) == 0x10);
             std::array<std::uint8_t, 0x40> parameters{};
             NativeArrayArgument module_ids_argument{};
-            module_ids_argument.count = static_cast<std::int32_t>(saved.module_ids.size());
+            module_ids_argument.count = static_cast<std::int32_t>(configuration.module_ids.size());
             module_ids_argument.capacity = module_ids_argument.count;
-            if (!saved.module_ids.empty())
-                module_ids_argument.data = reinterpret_cast<std::uintptr_t>(saved.module_ids.data());
+            if (!configuration.module_ids.empty())
+                module_ids_argument.data = reinterpret_cast<std::uintptr_t>(configuration.module_ids.data());
             std::memcpy(parameters.data() + module_ids_parameter.offset,
                 &module_ids_argument, sizeof(module_ids_argument));
             const auto force_offset = static_cast<std::size_t>(force_bool.byte_offset);
@@ -10869,11 +10869,11 @@ struct Ue5NteAdapter::State {
                 (parameters[force_offset] & static_cast<std::uint8_t>(~force_bool.field_mask)) |
                 force_bool.byte_mask);
             std::memcpy(parameters.data() + vehicle_id_parameter.offset,
-                &saved.vehicle_id, sizeof(saved.vehicle_id));
+                &configuration.vehicle_id, sizeof(configuration.vehicle_id));
             std::memcpy(parameters.data() + skin_id_parameter.offset,
-                &saved.skin_id, sizeof(saved.skin_id));
+                &configuration.skin_id, sizeof(configuration.skin_id));
             std::memcpy(parameters.data() + default_data_parameter.offset,
-                saved.default_module_data.data(), saved.default_module_data.size());
+                configuration.default_module_data.data(), configuration.default_module_data.size());
 
             if (!InvokeProcessEventGuarded(process_event_invoker, module_manager,
                     update_function, parameters.data(), parms_size)) {
@@ -10925,9 +10925,9 @@ struct Ue5NteAdapter::State {
             }
             std::array<std::uint8_t, 0x10> update_mat_parameters{};
             std::memcpy(update_mat_parameters.data() + update_mat_vehicle_id.offset,
-                &saved.vehicle_id, sizeof(saved.vehicle_id));
+                &configuration.vehicle_id, sizeof(configuration.vehicle_id));
             std::memcpy(update_mat_parameters.data() + update_mat_skin_id.offset,
-                &saved.skin_id, sizeof(saved.skin_id));
+                &configuration.skin_id, sizeof(configuration.skin_id));
             if (!InvokeProcessEventGuarded(process_event_invoker, module_manager,
                     update_mat_function, update_mat_parameters.data(), update_mat_parameters.size())) {
                 failure = "调用 HTVehicleModificationComponent.UpdateVehicleMat 失败";
@@ -10951,25 +10951,25 @@ struct Ue5NteAdapter::State {
             }
             NativeArrayHeader current_modules_array;
             if (!ReadNativeArrayHeaderLocked(current_modules_address, current_modules_array, 128) ||
-                current_modules_array.count != static_cast<std::int32_t>(saved.module_ids.size())) {
+                current_modules_array.count != static_cast<std::int32_t>(configuration.module_ids.size())) {
                 failure = "原生改装调用后 CurrentModuleIDList 数量与用户所选配置不一致";
                 return false;
             }
-            std::vector<std::uint64_t> observed_module_ids(saved.module_ids.size());
+            std::vector<std::uint64_t> observed_module_ids(configuration.module_ids.size());
             if (!observed_module_ids.empty() &&
                 !memory->Read(current_modules_array.data, observed_module_ids.data(),
                     observed_module_ids.size() * sizeof(std::uint64_t))) {
                 failure = "无法读取改装调用后的 CurrentModuleIDList";
                 return false;
             }
-            auto expected_module_ids = saved.module_ids;
+            auto expected_module_ids = configuration.module_ids;
             std::ranges::sort(expected_module_ids);
             std::ranges::sort(observed_module_ids);
             if (expected_module_ids != observed_module_ids) {
                 failure = "原生改装调用后 CurrentModuleIDList 与用户所选配置不一致";
                 return false;
             }
-            configured_module_count = saved.module_ids.size();
+            configured_module_count = configuration.module_ids.size();
             return true;
         } catch (...) {
             failure = "应用用户选择的载具改装配置时发生异常";
@@ -11221,200 +11221,6 @@ struct Ue5NteAdapter::State {
             vehicle_summon_status_message += "；用户所选改装已提交游戏原生函数并通过模块列表后置验证（模块数=" +
                 std::to_string(configured_module_count) + "；SkinID 已传入 UpdateVehicleMat）";
         }
-        return Status(ANOMALY_STATUS_V1_OK, vehicle_summon_status_message.c_str());
-    }
-
-    AnomalyStatusV1 VehicleSetWheelFriction(
-        const AnomalyNteVehicleSummonRequestV1* request) noexcept {
-        if (request == nullptr || request->struct_size < sizeof(*request) ||
-            (request->flags & (ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION |
-                ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER)) !=
-                (ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION |
-                 ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER) ||
-            !std::ranges::all_of(request->world_position,
-                [](double value) { return std::isfinite(value); })) {
-            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
-                "summon requires finite position and player-owner flags");
-        }
-        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
-            return Status(ANOMALY_STATUS_V1_CONFLICT, "vehicle summon requires Game thread");
-
-        std::scoped_lock lock(mutex);
-        if (player_controller == 0 || player_pawn == 0) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                "召唤失败：当前 HTPlayerController 或玩家 Pawn 尚未解析");
-        }
-        if (object_registry.items == 0) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                "召唤失败：GObjects registry 尚未通过当前 dump 布局校验");
-        }
-        if (!process_event_invoker) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                "召唤失败：Anomaly Host 的 ProcessEvent 调用通道不可用");
-        }
-        if (!EnsureVehicleCatalogLocked()) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_catalog_failure_reason);
-        }
-        if (selected_summon_vehicle_id.empty())
-            return Status(ANOMALY_STATUS_V1_CONFLICT, "select a VehicleID from DT_VehicleData first");
-        const auto selected = std::ranges::find(
-            vehicle_catalog, selected_summon_vehicle_id, &VehicleCatalogEntry::id);
-        if (selected == vehicle_catalog.end()) {
-            selected_summon_vehicle_id.clear();
-            return Status(ANOMALY_STATUS_V1_NOT_FOUND, "selected VehicleID is no longer in the current data table");
-        }
-
-        // Prefer the Anomaly-style direct route: resolve the VehicleData row's InVehicleTemple
-        // soft class and use GameplayStatics deferred spawn. This path does not require a CheatManager.
-        const std::array<double, 3> direct_destination{
-            request->world_position[0], request->world_position[1], request->world_position[2]};
-        std::uintptr_t direct_vehicle_class{};
-        if (ResolveVehicleTemplateClassLocked(selected->row, direct_vehicle_class)) {
-            std::uintptr_t direct_spawned{};
-            const char* direct_spawn_failure{};
-            if (SpawnVehicleDirectLocked(
-                    direct_vehicle_class, direct_destination, direct_spawned, direct_spawn_failure)) {
-                std::string class_name = "Vehicle";
-                std::uintptr_t class_object{};
-                if (ReadPointerAt(*memory, direct_spawned, Layout(profile, "object.class"), class_object))
-                    static_cast<void>(ReadReflectedObjectNameLocked(class_object, class_name));
-                std::uint64_t entity_id{};
-                std::uintptr_t index_address{};
-                std::int32_t internal_index{-1};
-                if (AddAddress(direct_spawned, Layout(profile, "object.internalIndex"), index_address) &&
-                    ReadValue(*memory, index_address, internal_index) && internal_index >= 0)
-                    entity_id = static_cast<std::uint64_t>(static_cast<std::uint32_t>(internal_index)) + 1U;
-                vehicle_summon_status_message = "召唤已实际生成并通过后置验证：" + class_name;
-                if (entity_id != 0) vehicle_summon_status_message += " (#" + std::to_string(entity_id) + ")";
-                vehicle_summon_status_message += "；目标位置=(" + std::to_string(direct_destination[0]) +
-                    ", " + std::to_string(direct_destination[1]) + ", " + std::to_string(direct_destination[2]) +
-                    ")；Actor.Owner 已核验为本地玩家 Pawn";
-                return Status(ANOMALY_STATUS_V1_OK, vehicle_summon_status_message.c_str());
-            }
-            // The detailed failure stage tells us whether no actor was created or a
-            // post-spawn invariant failed. Do not dispatch a second spawn when an actor
-            // may already have been created.
-            return Status(ANOMALY_STATUS_V1_FAILED,
-                direct_spawn_failure != nullptr
-                    ? direct_spawn_failure
-                    : "GameplayStatics spawned actor passed all direct-spawn checks");
-        }
-
-        // The direct class may not yet be resident because InVehicleTemple is a soft reference.
-        // Only in that case retain the dump-validated CheatManager route as a compatibility fallback.
-        std::uintptr_t controller_class{};
-        ReflectedPropertyInfo manager_property;
-        if (!ReadPointerAt(*memory, player_controller, Layout(profile, "object.class"), controller_class) ||
-            !FindReflectedPropertyLocked(controller_class, "CheatManager", manager_property, true) ||
-            manager_property.type != "ObjectProperty" || manager_property.element_size != 8 ||
-            manager_property.offset < 0) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "HTPlayerController.CheatManager property failed validation");
-        }
-        std::uintptr_t cheat_manager{};
-        if (!ReadValue(*memory, player_controller + static_cast<std::uintptr_t>(manager_property.offset), cheat_manager) ||
-            cheat_manager == 0) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "game CheatManager instance is not available");
-        }
-        VehicleFunctionBinding summon_binding{};
-        static constexpr std::array<std::string_view, 1> cheat_manager_outer{"HTCheatManager"};
-        if (!FindVehicleFunctionLocked("CheatSpawnVehicle", cheat_manager_outer, "NameInput", summon_binding)) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, "HTCheatManager.CheatSpawnVehicle(FName) ABI validation failed");
-        }
-
-        // Capture existing vehicle actors so the spawned actor must be new before relocation/ownership.
-        std::unordered_set<std::uintptr_t> existing;
-        const std::uint32_t scan_count = (std::min)(object_registry.count, object_registry.max_count);
-        existing.reserve((std::min)(static_cast<std::size_t>(scan_count), std::size_t{4096}));
-        // Snapshot every live object pointer, not just current vehicles: a class may only
-        // become identifiable after spawn, and must not be mistaken for a new object.
-        for (std::uint32_t index = 0; index < scan_count; ++index) {
-            std::uintptr_t object{};
-            std::uint32_t serial{};
-            if (ReadObjectSlot(*memory, object_registry, index, object, serial) && object != 0)
-                existing.insert(object);
-        }
-
-        // CheatSpawnVehicle consumes a native FName VehicleID, not the DataTable RowName.
-        // The direct soft-class route above uses the row pointer; this fallback must use
-        // the independently validated VehicleData.VehicleID field and must never substitute
-        // the displayed Name or the canonical RowName.
-        if (!selected->vehicle_id_valid) {
-            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
-                "直接载具模板类不可解析，且 DT_VehicleData.VehicleID 无有效 FName；拒绝用 RowName 冒充 VehicleID 调用 CheatSpawnVehicle");
-        }
-        std::array<std::uint8_t, 8> parameters{};
-        std::memcpy(parameters.data() + summon_binding.parameter_offset,
-            &selected->vehicle_id_comparison_index, sizeof(selected->vehicle_id_comparison_index));
-        std::memcpy(parameters.data() + summon_binding.parameter_offset + sizeof(std::uint32_t),
-            &selected->vehicle_id_number, sizeof(selected->vehicle_id_number));
-        if (!InvokeProcessEventGuarded(process_event_invoker, cheat_manager,
-                summon_binding.function, parameters.data(), summon_binding.parms_size)) {
-            return Status(ANOMALY_STATUS_V1_FAILED, "CheatSpawnVehicle(FName) ProcessEvent failed");
-        }
-
-        // GObjects count can grow during CheatSpawnVehicle. Reload the live registry header
-        // instead of scanning only the cached count from the beginning of this game tick.
-        ObjectRegistryState after_spawn_registry;
-        const auto* gobjects_symbol = Symbol("ue5.GObjects");
-        if (gobjects_symbol == nullptr || !gobjects_symbol->Available() ||
-            !LoadObjectRegistry(profile, *memory, gobjects_symbol->address, after_spawn_registry)) {
-            return Status(ANOMALY_STATUS_V1_FAILED,
-                "spawn dispatched, but live GObjects could not be refreshed; position/owner not verified");
-        }
-        std::uintptr_t spawned{};
-        const std::uint32_t after_spawn_count =
-            (std::min)(after_spawn_registry.count, after_spawn_registry.max_count);
-        for (std::uint32_t index = 0; index < after_spawn_count; ++index) {
-            std::uintptr_t object{};
-            std::uint32_t serial{};
-            if (ReadObjectSlot(*memory, after_spawn_registry, index, object, serial) && object != 0 &&
-                !existing.contains(object) && IsVehicleActorLocked(object)) {
-                spawned = object;
-                break;
-            }
-        }
-        if (spawned == 0) {
-            return Status(ANOMALY_STATUS_V1_FAILED,
-                "spawn was dispatched, but the new vehicle actor could not be identified; position/owner not verified");
-        }
-        const std::array<double, 3> destination{
-            request->world_position[0], request->world_position[1], request->world_position[2]};
-        if (!RelocateSpawnedVehicleLocked(spawned, destination)) {
-            return Status(ANOMALY_STATUS_V1_FAILED,
-                "vehicle actor spawned but K2_SetActorLocation postcondition failed");
-        }
-        if (!InvokeVehicleSetOwnerLocked(spawned, player_pawn)) {
-            return Status(ANOMALY_STATUS_V1_FAILED,
-                "vehicle location verified but Actor.SetOwner(player) call failed");
-        }
-        // Verify the actual Actor.Owner field before reporting success.
-        std::uintptr_t spawned_class{};
-        ReflectedPropertyInfo owner_property;
-        std::uintptr_t actual_owner{};
-        if (!ReadPointerAt(*memory, spawned, Layout(profile, "object.class"), spawned_class) ||
-            !FindReflectedPropertyLocked(spawned_class, "Owner", owner_property, true) ||
-            owner_property.type != "ObjectProperty" || owner_property.element_size != 8 ||
-            owner_property.offset < 0 ||
-            !ReadValue(*memory, spawned + static_cast<std::uintptr_t>(owner_property.offset), actual_owner) ||
-            actual_owner != player_pawn) {
-            return Status(ANOMALY_STATUS_V1_FAILED,
-                "vehicle position verified but Actor.Owner is not the local player pawn");
-        }
-        std::string class_name = "Vehicle";
-        std::uintptr_t class_object{};
-        if (ReadPointerAt(*memory, spawned, Layout(profile, "object.class"), class_object))
-            static_cast<void>(ReadReflectedObjectNameLocked(class_object, class_name));
-        std::uint64_t entity_id{};
-        std::uintptr_t index_address{};
-        std::int32_t internal_index{-1};
-        if (AddAddress(spawned, Layout(profile, "object.internalIndex"), index_address) &&
-            ReadValue(*memory, index_address, internal_index) && internal_index >= 0)
-            entity_id = static_cast<std::uint64_t>(static_cast<std::uint32_t>(internal_index)) + 1U;
-        vehicle_summon_status_message = "召唤已实际生成并通过后置验证：" + class_name;
-        if (entity_id != 0) vehicle_summon_status_message += " (#" + std::to_string(entity_id) + ")";
-        vehicle_summon_status_message += "；目标位置=(" + std::to_string(destination[0]) +
-            ", " + std::to_string(destination[1]) + ", " + std::to_string(destination[2]) +
-            ")；Actor.Owner 已核验为本地玩家 Pawn";
         return Status(ANOMALY_STATUS_V1_OK, vehicle_summon_status_message.c_str());
     }
 
