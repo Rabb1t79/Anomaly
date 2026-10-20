@@ -436,13 +436,17 @@ void RefreshCustomizationCatalogOnGameThread() {
     }
 
     std::string default_skin;
+    std::string fallback_skin;
     for (const auto& option : options) {
-        if (option.kind == ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN &&
-            option.is_default) {
+        if (option.kind != ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN) continue;
+        if (fallback_skin.empty()) fallback_skin = option.id;
+        if (option.is_default) {
             default_skin = option.id;
             break;
         }
     }
+    const bool used_fallback_skin = default_skin.empty() && !fallback_skin.empty();
+    if (default_skin.empty()) default_skin = std::move(fallback_skin);
     {
         std::scoped_lock lock(g_context.mutex);
         if (selected_id != g_context.selected_vehicle_id) return;
@@ -462,8 +466,10 @@ void RefreshCustomizationCatalogOnGameThread() {
         g_context.customization_status = "已读取该车型实时改装选项：模块 " +
             std::to_string(module_count) + " 项，涂装 " + std::to_string(skin_count) +
             " 项；未选择的模块槽位沿用游戏数据表默认配置";
-        if (g_context.customization_skin_id.empty()) {
-            g_context.customization_status += "；该车型没有可自动识别的默认涂装，请手动选择涂装后召唤";
+        if (used_fallback_skin) {
+            g_context.customization_status += "；该车型没有标记默认涂装，已暂选首个有效涂装，可在下方更改";
+        } else if (g_context.customization_skin_id.empty()) {
+            g_context.customization_status += "；该车型没有可用涂装选项，改装召唤将保留游戏生成车辆的原涂装";
         }
     }
 }
@@ -753,12 +759,12 @@ void Update() {
         if (summon_customized_requested) {
             if (customization_vehicle_id != selected_id) {
                 validation_error = "改装召唤失败：改造清单与当前选择的车型不一致，请重新打开清单";
-            } else if (selected_skin_id.empty()) {
-                validation_error = "改装召唤失败：尚未选择有效涂装";
             } else {
                 request.flags |= ANOMALY_NTE_VEHICLE_SUMMON_V1_APPLY_CUSTOM_CONFIGURATION;
-                request.skin_id = anomaly::sdk::StringView(std::string_view(
-                    selected_skin_id.data(), selected_skin_id.size()));
+                if (!selected_skin_id.empty()) {
+                    request.skin_id = anomaly::sdk::StringView(std::string_view(
+                        selected_skin_id.data(), selected_skin_id.size()));
+                }
                 module_selections.reserve(module_overrides.size());
                 for (const auto& override_entry : module_overrides) {
                     AnomalyNteVehicleModuleSelectionV1 selection{};
@@ -1252,7 +1258,7 @@ void DrawCustomizationTab(
     DrawDivider(ui);
     DrawText(ui, "仅手动选择的模块槽位会覆盖默认值；其他槽位使用游戏数据表的默认模块。");
     const bool can_summon_customized = player_position_valid && has_selected &&
-        customization_vehicle_id == selected && !skin_id.empty();
+        customization_vehicle_id == selected && !options.empty();
     if (DrawButtonEnabled(ui, "召唤改装车辆", can_summon_customized)) {
         g_context.summon_customized.store(true, std::memory_order_release);
     }
