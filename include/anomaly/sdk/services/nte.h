@@ -15,7 +15,7 @@
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_ID "anomaly.nte.navigation"
 #define ANOMALY_NTE_NAVIGATION_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_VEHICLE_SERVICE_V1_ID "anomaly.nte.vehicle"
-#define ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION 6u
+#define ANOMALY_NTE_VEHICLE_SERVICE_V1_VERSION 7u
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_ID "anomaly.nte.entities"
 #define ANOMALY_NTE_ENTITIES_SERVICE_V1_VERSION 1u
 #define ANOMALY_NTE_ACTORS_SERVICE_V1_ID "anomaly.nte.actors"
@@ -319,6 +319,15 @@ typedef uint32_t AnomalyNteVehicleFlagsV1;
 #define ANOMALY_NTE_VEHICLE_CLASS_NAME_MAX_UTF8_BYTES 128u
 #define ANOMALY_NTE_VEHICLE_SUMMON_V1_HAS_POSITION (1u << 0u)
 #define ANOMALY_NTE_VEHICLE_SUMMON_V1_SET_OWNER_TO_PLAYER (1u << 1u)
+// Bit 2 is reserved: the abandoned saved-player-configuration path is not used.
+#define ANOMALY_NTE_VEHICLE_SUMMON_V1_RESERVED_OWNED_MODIFICATIONS (1u << 2u)
+// Applies the explicit module and skin IDs supplied by the current customization selection.
+#define ANOMALY_NTE_VEHICLE_SUMMON_V1_APPLY_CUSTOM_CONFIGURATION (1u << 3u)
+#define ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_VALID (1u << 0u)
+#define ANOMALY_NTE_VEHICLE_CUSTOMIZATION_OPTION_V1_DEFAULT (1u << 1u)
+#define ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_MODULE 1u
+#define ANOMALY_NTE_VEHICLE_CUSTOMIZATION_KIND_V1_SKIN 2u
+#define ANOMALY_NTE_VEHICLE_CUSTOMIZATION_LABEL_MAX_UTF8_BYTES 256u
 typedef struct AnomalyNteVehicleSnapshotV1 {
     uint32_t struct_size;
     uint32_t flags;
@@ -341,10 +350,38 @@ typedef struct AnomalyNteVehicleCatalogSnapshotV1 {
     uint32_t reserved;
 } AnomalyNteVehicleCatalogSnapshotV1;
 
+typedef struct AnomalyNteVehicleCustomizationCatalogSnapshotV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint64_t sequence;
+    uint32_t entry_count;
+    uint32_t reserved;
+} AnomalyNteVehicleCustomizationCatalogSnapshotV1;
+
+typedef struct AnomalyNteVehicleCustomizationOptionV1 {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint32_t kind;        // MODULE or SKIN
+    uint32_t module_type; // EVehicleModuleType for MODULE; 0 for SKIN
+    char option_id[ANOMALY_NTE_VEHICLE_ID_MAX_UTF8_BYTES + 1u];
+    char label[ANOMALY_NTE_VEHICLE_CUSTOMIZATION_LABEL_MAX_UTF8_BYTES + 1u];
+} AnomalyNteVehicleCustomizationOptionV1;
+
+typedef struct AnomalyNteVehicleModuleSelectionV1 {
+    uint32_t struct_size;
+    uint32_t module_type;
+    AnomalyStringViewV1 module_id;
+} AnomalyNteVehicleModuleSelectionV1;
+
 typedef struct AnomalyNteVehicleSummonRequestV1 {
     uint32_t struct_size;
     uint32_t flags;
     double world_position[3];
+    // V7 tail. Ignored for ordinary V6-compatible summon requests.
+    AnomalyStringViewV1 skin_id;
+    const AnomalyNteVehicleModuleSelectionV1* module_selections;
+    uint32_t module_selection_count;
+    uint32_t reserved;
 } AnomalyNteVehicleSummonRequestV1;
 
 #define ANOMALY_NTE_VEHICLE_SPEED_TARGET_CURRENT (1u << 0u)
@@ -404,6 +441,14 @@ typedef struct AnomalyNteVehicleServiceV1 {
     // validates matching live vehicles but does not define the user-facing calibration.
     AnomalyStatusV1 (ANOMALY_CALL *set_speed_target)(
         void* user, const AnomalyNteVehicleSpeedTargetV1* request);
+    // V7 append-only extension: a snapshot of the explicitly selectable options for one DT_VehicleData row.
+    // Both callbacks are Game-thread-only and validate their row/option against the active DataTables.
+    AnomalyStatusV1 (ANOMALY_CALL *customization_catalog_snapshot)(
+        void* user, AnomalyStringViewV1 vehicle_row_id,
+        AnomalyNteVehicleCustomizationCatalogSnapshotV1* snapshot);
+    AnomalyStatusV1 (ANOMALY_CALL *customization_option_at)(
+        void* user, AnomalyStringViewV1 vehicle_row_id, uint32_t index,
+        AnomalyNteVehicleCustomizationOptionV1* option);
 } AnomalyNteVehicleServiceV1;
 
 
