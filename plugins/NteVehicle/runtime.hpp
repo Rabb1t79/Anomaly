@@ -3980,6 +3980,12 @@ struct Runtime : NativeAccess {
     // locally spawned one. Remove together with the capture branch.
     std::string diagnostic_directory;
     std::uintptr_t last_probed_vehicle{};
+    // Experimental: borrow the buoyancy tuning of a finished boat for the unfinished
+    // Vehicle066 hull. The reference values are captured from the last working boat the
+    // player entered; the asset tail from Pontoons to PontoonCenterOfMass is reused.
+    std::array<std::uint8_t, 0x78> buoyancy_reference_data{};
+    bool buoyancy_reference_valid{};
+    std::uintptr_t buoyancy_fixed_asset{};
     void SetDiagnosticDirectory(const std::string& directory) {
         diagnostic_directory = directory;
     }
@@ -4051,7 +4057,9 @@ struct Runtime : NativeAccess {
             }
             const bool water_pawn = ObjectClassChainContainsLocked(actor, "HTWaterVehicleBasePawn");
             std::uintptr_t buoyancy{};
+            std::uintptr_t asset{};
             std::string buoyancy_data;
+            std::string buoyancy_fix;
             ReflectedPropertyInfo buoyancy_property;
             if (FindReflectedPropertyLocked(actor_class, "FluxBuoyancyComponent", buoyancy_property, true) &&
                 buoyancy_property.type == "ObjectProperty" && buoyancy_property.offset >= 0 &&
@@ -4062,11 +4070,27 @@ struct Runtime : NativeAccess {
                 if (ReadPointerAt(*memory, buoyancy, layout.object_class, buoyancy_class) &&
                     FindReflectedPropertyLocked(buoyancy_class, "BuoyancyDataAsset", data_property, true) &&
                     data_property.type == "ObjectProperty" && data_property.offset >= 0) {
-                    std::uintptr_t asset{};
                     if (ReadValue(*memory, buoyancy + static_cast<std::uintptr_t>(data_property.offset), asset) &&
                         asset != 0) {
                         static_cast<void>(ReadReflectedObjectNameLocked(asset, buoyancy_data));
                     }
+                }
+            }
+            if (asset != 0) {
+                if (vehicle_id == "Vehicle066") {
+                    if (buoyancy_reference_valid && buoyancy_fixed_asset != asset &&
+                        memory->Write(asset + 0x30, buoyancy_reference_data.data(),
+                            buoyancy_reference_data.size())) {
+                        buoyancy_fixed_asset = asset;
+                        buoyancy_fix = "applied";
+                    } else if (!buoyancy_reference_valid) {
+                        buoyancy_fix = "no-reference";
+                    }
+                } else if (!buoyancy_reference_valid &&
+                    memory->Read(asset + 0x30, buoyancy_reference_data.data(),
+                        buoyancy_reference_data.size())) {
+                    buoyancy_reference_valid = true;
+                    buoyancy_fix = "reference";
                 }
             }
             std::string line = "{\"class\":\"" + JsonEscape(class_name) +
@@ -4080,7 +4104,8 @@ struct Runtime : NativeAccess {
                 ",\"has_instigator\":" + (instigator != 0 ? "true" : "false") +
                 ",\"water_pawn\":" + (water_pawn ? "true" : "false") +
                 ",\"buoyancy\":" + (buoyancy != 0 ? "true" : "false") +
-                ",\"buoyancy_data\":\"" + JsonEscape(buoyancy_data) + "\"}";
+                ",\"buoyancy_data\":\"" + JsonEscape(buoyancy_data) +
+                "\",\"buoyancy_fix\":\"" + JsonEscape(buoyancy_fix) + "\"}";
             std::string path = diagnostic_directory;
             if (path.back() != '\\' && path.back() != '/') path.push_back('\\');
             path += "vehicle-actor-probe.jsonl";
