@@ -3,6 +3,7 @@
 #include "vehicle_types.hpp"
 #include "messages.hpp"
 #include <atomic>
+#include <fstream>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -3883,6 +3884,115 @@ struct Runtime : NativeAccess {
         const auto friction = VehicleSetWheelFriction(true);
         if (torque.code != ANOMALY_STATUS_V1_OK) return torque;
         return friction;
+    }
+
+    // Temporary diagnostic: record the replication identity of the vehicle the local
+    // player just entered, so a server-spawned shared vehicle can be compared with a
+    // locally spawned one. Remove together with the capture branch.
+    std::string diagnostic_directory;
+    std::uintptr_t last_probed_vehicle{};
+    void SetDiagnosticDirectory(const std::string& directory) {
+        diagnostic_directory = directory;
+    }
+
+    void ProbeVehicleActorLocked(const std::uintptr_t actor) {
+        try {
+            if (actor == 0 || diagnostic_directory.empty()) return;
+            std::uintptr_t actor_class{};
+            if (!ReadPointerAt(*memory, actor, layout.object_class, actor_class)) return;
+            std::string class_name;
+            std::string object_name;
+            static_cast<void>(ReadReflectedObjectNameLocked(actor_class, class_name));
+            static_cast<void>(ReadReflectedObjectNameLocked(actor, object_name));
+            const auto read_byte = [&](const std::string_view property_name,
+                                       std::uint8_t& value) -> bool {
+                ReflectedPropertyInfo info;
+                if (!FindReflectedPropertyLocked(actor_class, property_name, info, true) ||
+                    (info.type != "ByteProperty" && info.type != "EnumProperty") ||
+                    info.offset < 0) return false;
+                return ReadValue(*memory, actor + static_cast<std::uintptr_t>(info.offset), value);
+            };
+            std::uint8_t role{}, remote_role{}, replicates{};
+            static_cast<void>(read_byte("Role", role));
+            static_cast<void>(read_byte("RemoteRole", remote_role));
+            ReflectedPropertyInfo replicates_info;
+            ReflectedBoolParameter replicates_bool{};
+            if (FindReflectedPropertyLocked(actor_class, "bReplicates", replicates_info, true)) {
+                std::int32_t class_size{};
+                if (ReadValue(*memory, actor_class + layout.ustruct_propertiesSize, class_size) &&
+                    class_size > 0 &&
+                    ReadReflectedBoolParameterLocked(replicates_info,
+                        static_cast<std::uint16_t>(class_size), replicates_bool)) {
+                    std::uint8_t byte{};
+                    if (ReadValue(*memory,
+                            actor + static_cast<std::uintptr_t>(replicates_bool.byte_offset), byte)) {
+                        replicates = (byte & replicates_bool.byte_mask) != 0 ? 1U : 0U;
+                    }
+                }
+            }
+            std::uintptr_t owner{}, instigator{};
+            std::string owner_class;
+            ReflectedPropertyInfo object_property;
+            if (FindReflectedPropertyLocked(actor_class, "Owner", object_property, true) &&
+                object_property.type == "ObjectProperty" && object_property.offset >= 0) {
+                if (ReadValue(*memory, actor + static_cast<std::uintptr_t>(object_property.offset), owner) &&
+                    owner != 0) {
+                    std::uintptr_t owner_class_object{};
+                    if (ReadPointerAt(*memory, owner, layout.object_class, owner_class_object)) {
+                        static_cast<void>(ReadReflectedObjectNameLocked(owner_class_object, owner_class));
+                    }
+                }
+            }
+            if (FindReflectedPropertyLocked(actor_class, "Instigator", object_property, true) &&
+                object_property.type == "ObjectProperty" && object_property.offset >= 0) {
+                static_cast<void>(ReadValue(*memory,
+                    actor + static_cast<std::uintptr_t>(object_property.offset), instigator));
+            }
+            std::string vehicle_id;
+            ReflectedPropertyInfo vehicle_id_property;
+            if (FindReflectedPropertyLocked(actor_class, "VehicleID", vehicle_id_property, true) &&
+                vehicle_id_property.type == "NameProperty" && vehicle_id_property.offset >= 0) {
+                std::uint32_t comparison{}, number{};
+                if (ReadValue(*memory,
+                        actor + static_cast<std::uintptr_t>(vehicle_id_property.offset), comparison) &&
+                    ReadValue(*memory,
+                        actor + static_cast<std::uintptr_t>(vehicle_id_property.offset) + 4U, number)) {
+                    static_cast<void>(ResolveFNameLocked(comparison, number, vehicle_id));
+                }
+            }
+            std::string line = "{\"class\":\"" + JsonEscape(class_name) +
+                "\",\"object\":\"" + JsonEscape(object_name) +
+                "\",\"vehicle_id\":\"" + JsonEscape(vehicle_id) +
+                "\",\"role\":" + std::to_string(role) +
+                ",\"remote_role\":" + std::to_string(remote_role) +
+                ",\"replicates\":" + std::to_string(replicates) +
+                ",\"owner_class\":\"" + JsonEscape(owner_class) +
+                "\",\"has_owner\":" + (owner != 0 ? "true" : "false") +
+                ",\"has_instigator\":" + (instigator != 0 ? "true" : "false") + "}";
+            std::string path = diagnostic_directory;
+            if (path.back() != '\\' && path.back() != '/') path.push_back('\\');
+            path += "vehicle-actor-probe.jsonl";
+            std::ofstream file(path, std::ios::binary | std::ios::app);
+            if (file) {
+                file.write(line.data(), static_cast<std::streamsize>(line.size()));
+                file.put('\n');
+            }
+        } catch (...) {  }
+    }
+
+    static std::string JsonEscape(const std::string_view text) {
+        std::string out;
+        out.reserve(text.size());
+        for (const char raw : text) {
+            const auto value = static_cast<unsigned char>(raw);
+            if (value == '"' || value == '\\') {
+                out.push_back('\\');
+                out.push_back(raw);
+            } else if (value >= 0x20U) {
+                out.push_back(raw);
+            }
+        }
+        return out;
     }
 
 

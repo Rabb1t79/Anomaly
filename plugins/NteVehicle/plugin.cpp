@@ -2415,6 +2415,9 @@ AnomalyStatusV1 ANOMALY_CALL Start(void* plugin_context) try {
         return FailureStatus(ANOMALY_STATUS_V1_UNAVAILABLE, "status.window_unavailable",
             "The vehicle menu window or the input service is unavailable.");
     }
+    if (g_context.vehicle != nullptr) {
+        g_context.vehicle->SetDiagnosticDirectory(g_context.state_directory);
+    }
 
     ReleaseMenuHotkey(g_context);
     AnomalyHotkeySpecV1 hotkey_spec{};
@@ -2504,6 +2507,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.12.0"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.12.1"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }

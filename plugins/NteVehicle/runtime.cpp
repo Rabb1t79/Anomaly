@@ -15,6 +15,10 @@ void Runtime::Tick() {
     if (previous_generation != object_generation || previous_world != world_pointer)
         ClearObjectCaches();
     MaintainVehicleSpeedFieldsLocked();
+    if (current_vehicle_object != last_probed_vehicle) {
+        last_probed_vehicle = current_vehicle_object;
+        ProbeVehicleActorLocked(current_vehicle_object);
+    }
 }
 
 void Runtime::ClearObjectCaches() {
