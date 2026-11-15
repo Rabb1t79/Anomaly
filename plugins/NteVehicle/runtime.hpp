@@ -3995,6 +3995,94 @@ struct Runtime : NativeAccess {
         return out;
     }
 
+    // Experimental: replay the game's own smart-key summon RPC so the vehicle is spawned
+    // by the server (and therefore replicated) instead of being a client-only Actor.
+    // Sends EVMSCTS_Set_SmartVehicleKeyUseState with the Bool wrapper captured from the
+    // game: FParameterWrapperArray { Type = Bool(1), BinaryData = 00000000 }.
+    AnomalyStatusV1 VehicleSummonBoundViaRpc() {
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.server_summon_requires_the_game_thread_300", "Server summon requires the Game thread."));
+        std::scoped_lock lock(mutex);
+        if (!ready || !process_event_invoker || player_controller == 0)
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                TextLocalized("backend.server_summon_requires_a_ready_player_controller_301", "Server summon requires a ready player controller."));
+        try {
+            std::uintptr_t controller_class{};
+            ReflectedPropertyInfo player_state_property;
+            std::uintptr_t player_state{};
+            if (!ReadPointerAt(*memory, player_controller, layout.object_class, controller_class) ||
+                !FindReflectedPropertyLocked(controller_class, "PlayerState", player_state_property, true) ||
+                player_state_property.type != "ObjectProperty" ||
+                player_state_property.element_size != 8 || player_state_property.offset < 0 ||
+                !ReadValue(*memory, player_controller +
+                        static_cast<std::uintptr_t>(player_state_property.offset), player_state) ||
+                player_state == 0) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.player_state_is_unavailable_302", "Player state is unavailable."));
+            }
+            std::uintptr_t player_state_class{};
+            ReflectedPropertyInfo component_property;
+            std::uintptr_t component{};
+            if (!ReadPointerAt(*memory, player_state, layout.object_class, player_state_class) ||
+                !FindReflectedPropertyLocked(player_state_class, "VehicleComponentPtr", component_property, true) ||
+                component_property.type != "ObjectProperty" ||
+                component_property.element_size != 8 || component_property.offset < 0 ||
+                !ReadValue(*memory, player_state +
+                        static_cast<std::uintptr_t>(component_property.offset), component) ||
+                component == 0 ||
+                !ObjectClassChainContainsLocked(component, "HTVehicleComponent")) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.vehicle_component_is_unavailable_303", "Vehicle component is unavailable."));
+            }
+            std::uintptr_t function{};
+            if (!FindExactObjectLocked(
+                    L"/Script/HTGame.HTVehicleComponent.ServerVehicleModifyRPC", function) ||
+                function == 0) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.servervehiclemodifyrpc_is_unavailable_304", "ServerVehicleModifyRPC is unavailable."));
+            }
+            std::uint8_t num_parms{};
+            std::uint16_t parms_size{};
+            if (!ReadValue(*memory, function + layout.ufunction_numParms, num_parms) ||
+                !ReadValue(*memory, function + layout.ufunction_parmsSize, parms_size) ||
+                num_parms != 2 || parms_size != 0x20) {
+                return Status(ANOMALY_STATUS_V1_UNAVAILABLE,
+                    TextLocalized("backend.servervehiclemodifyrpc_abi_validation_failed_305", "ServerVehicleModifyRPC ABI validation failed."));
+            }
+
+            alignas(16) std::array<std::uint8_t, 4> boolean{};
+            alignas(16) std::array<std::uint8_t, 0x20> wrapper{};
+            wrapper[0] = 1U; // EParameterType::Bool
+            std::uint8_t* boolean_data = boolean.data();
+            const std::int32_t boolean_count = static_cast<std::int32_t>(boolean.size());
+            const std::int32_t boolean_capacity = boolean_count;
+            std::memcpy(wrapper.data() + 0x10, &boolean_data, sizeof(boolean_data));
+            std::memcpy(wrapper.data() + 0x18, &boolean_count, sizeof(boolean_count));
+            std::memcpy(wrapper.data() + 0x1C, &boolean_capacity, sizeof(boolean_capacity));
+            struct ParameterWrapperArray {
+                std::uint8_t* data;
+                std::int32_t count;
+                std::int32_t capacity;
+                std::int32_t read_index;
+                std::int32_t padding;
+            } wrappers{wrapper.data(), 1, 1, 0, 0};
+            static_assert(sizeof(wrappers) == 0x18, "FParameterWrapperArray layout");
+            alignas(16) std::array<std::uint8_t, 0x20> parameters{};
+            const std::int32_t message_type = 19; // EVMSCTS_Set_SmartVehicleKeyUseState
+            std::memcpy(parameters.data(), &message_type, sizeof(message_type));
+            std::memcpy(parameters.data() + 8, &wrappers, sizeof(wrappers));
+            if (!InvokeProcessEventGuarded(process_event_invoker, component, function,
+                    parameters.data(), parameters.size())) {
+                return Status(ANOMALY_STATUS_V1_FAILED,
+                    TextLocalized("backend.servervehiclemodifyrpc_19_invoke_failed_306", "ServerVehicleModifyRPC(19) invoke failed."));
+            }
+            return Status(ANOMALY_STATUS_V1_OK);
+        } catch (...) {
+            return Status(ANOMALY_STATUS_V1_FAILED,
+                TextLocalized("backend.server_summon_threw_307", "Server summon threw."));
+        }
+    }
 
 };
 } // namespace nte_vehicle

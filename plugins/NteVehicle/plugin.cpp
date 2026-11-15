@@ -91,6 +91,7 @@ struct Context {
     std::atomic_bool reset{};
     std::atomic_bool summon{};
     std::atomic_bool summon_customized{};
+    std::atomic_bool summon_server{};
     std::atomic_bool friction_toggle{};
     std::atomic_bool started{};
     std::atomic_uint32_t durability_last_status_code{ANOMALY_STATUS_V1_NOT_FOUND};
@@ -822,6 +823,16 @@ void Update() {
                   status));
     }
 
+    if (g_context.summon_server.exchange(false, std::memory_order_acq_rel)) {
+        const auto status = g_context.vehicle->VehicleSummonBoundViaRpc();
+        SetStatus(StatusDescription(
+            g_context.localizer.Text("status.server_summon", "Server smart-key summon"), status));
+        if (status.code == ANOMALY_STATUS_V1_OK) {
+            SetLastSummon(g_context.localizer.Text("status.server_summon_sent",
+                "Server summon request sent"));
+        }
+    }
+
     const bool summon_requested = g_context.summon.exchange(false, std::memory_order_acq_rel);
     const bool summon_customized_requested = g_context.summon_customized.exchange(false, std::memory_order_acq_rel);
     if (summon_requested || summon_customized_requested) {
@@ -1388,6 +1399,11 @@ void DrawCustomizationDetail(
     if (DrawButtonEnabled(ui, summon_label, has_selected && player_position_valid)) {
         SetLastSummon(g_context.localizer.Text("status.summon_submitted", "Summon request submitted."));
         g_context.summon.store(true, std::memory_order_release);
+    }
+    const auto server_summon_label = g_context.localizer.Text(
+        "action.server_summon", "Server summon (test)");
+    if (DrawButtonEnabled(ui, server_summon_label, has_selected && player_position_valid)) {
+        g_context.summon_server.store(true, std::memory_order_release);
     }
     const auto reload_label =
         g_context.localizer.Text("action.reload_customization", "Reload customization data");
@@ -2507,6 +2523,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.12.1"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.12.2"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }
