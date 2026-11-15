@@ -4079,10 +4079,10 @@ struct Runtime : NativeAccess {
             if (asset != 0) {
                 if (vehicle_id == "Vehicle066") {
                     if (buoyancy_reference_valid && buoyancy_fixed_asset != asset &&
-                        memory->Write(asset + 0x30, buoyancy_reference_data.data(),
-                            buoyancy_reference_data.size())) {
+                        memory->Write(asset + 0x40, buoyancy_reference_data.data() + 0x10,
+                            0x50)) {
                         buoyancy_fixed_asset = asset;
-                        buoyancy_fix = "applied";
+                        buoyancy_fix = "applied-scalars-only";
                     } else if (!buoyancy_reference_valid) {
                         buoyancy_fix = "no-reference";
                     }
