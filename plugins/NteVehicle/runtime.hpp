@@ -165,6 +165,9 @@ struct Runtime : NativeAccess {
     struct VehicleBuildConfiguration {
         std::uint64_t vehicle_id{};
         std::uint64_t skin_id{};
+        // Vehicle key the skin is resolved under; differs from vehicle_id only for the
+        // experimental cross-model transplant, where the source model owns the skin row.
+        std::uint64_t skin_vehicle_id{};
         std::array<std::uint8_t, 0x1C> default_module_data{};
         std::vector<std::uint64_t> module_ids;
     };
@@ -187,6 +190,9 @@ struct Runtime : NativeAccess {
     // Skin of the remembered source model, reused when a foreign model is summoned.
     std::string foreign_skin_id;
     std::uint64_t foreign_skin_native_name{};
+    // FName of the remembered source model, used to resolve its skin row.
+    std::uint64_t foreign_skin_vehicle{};
+    std::string foreign_skin_vehicle_id;
     std::string vehicle_customization_vehicle_row_id;
     std::uint64_t vehicle_customization_generation{};
     std::uint64_t vehicle_customization_vehicle_sequence{};
@@ -3214,6 +3220,14 @@ struct Runtime : NativeAccess {
             }
         }
         foreign_module_source_id = selected->id;
+        // The skin row is keyed by the source model's own VehicleID, so remember it.
+        foreign_skin_vehicle = static_cast<std::uint64_t>(selected->name_comparison_index) |
+            (static_cast<std::uint64_t>(selected->name_number) << 32U);
+        if (foreign_skin_vehicle == 0) {
+            foreign_skin_vehicle = static_cast<std::uint64_t>(selected->vehicle_id_comparison_index) |
+                (static_cast<std::uint64_t>(selected->vehicle_id_number) << 32U);
+        }
+        foreign_skin_vehicle_id = selected->id;
         return Status(ANOMALY_STATUS_V1_OK, foreign_module_source_id.c_str());
     }
 
@@ -3288,6 +3302,11 @@ struct Runtime : NativeAccess {
             if (selected_skin != nullptr && build.skin_id == 0) {
                 failure = TextLocalized("backend.the_selected_skinid_is_none_customization_was_205", "The selected SkinID is None; customization was rejected.");
                 return false;
+            }
+            build.skin_vehicle_id = build.vehicle_id;
+            if (foreign_skin_selected) {
+                build.skin_vehicle_id = foreign_skin_vehicle != 0
+                    ? foreign_skin_vehicle : build.vehicle_id;
             }
 
             // Start from this model's game-defined default module records. The plugin sends only
@@ -3570,8 +3589,10 @@ struct Runtime : NativeAccess {
                     return false;
                 }
                 std::array<std::uint8_t, 0x10> update_mat_parameters{};
+                const auto skin_vehicle = saved.skin_vehicle_id != 0
+                    ? saved.skin_vehicle_id : saved.vehicle_id;
                 std::memcpy(update_mat_parameters.data() + update_mat_vehicle_id.offset,
-                    &saved.vehicle_id, sizeof(saved.vehicle_id));
+                    &skin_vehicle, sizeof(skin_vehicle));
                 std::memcpy(update_mat_parameters.data() + update_mat_skin_id.offset,
                     &saved.skin_id, sizeof(saved.skin_id));
                 if (!InvokeProcessEventGuarded(process_event_invoker, module_manager,
