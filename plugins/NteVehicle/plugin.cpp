@@ -102,6 +102,10 @@ struct Context {
     bool friction_enabled{true};
 } g_context;
 
+// Temporary RPC capture (defined below) needs to be armed from the game-thread Update.
+extern std::atomic_bool g_rpc_subscribed;
+void StartRpcCapture();
+
 template <typename Struct, typename Field>
 bool HasField(const Struct* value, std::size_t offset) noexcept {
     return value != nullptr && value->struct_size >= offset + sizeof(Field);
@@ -692,6 +696,18 @@ void Update() {
         std::scoped_lock lock(g_context.mutex);
         g_context.player_position_valid = valid;
         if (valid) g_context.player_snapshot = player_snapshot;
+    }
+
+    // Arm the temporary RPC capture once the world is ready: the vehicle component
+    // function is not loaded yet when the plugin Load callback runs.
+    if (!g_rpc_subscribed.load(std::memory_order_acquire) && g_context.player_position_valid) {
+        static std::chrono::steady_clock::time_point next_capture_attempt{};
+        const auto now = std::chrono::steady_clock::now();
+        if (next_capture_attempt.time_since_epoch().count() == 0 ||
+            now >= next_capture_attempt) {
+            next_capture_attempt = now + std::chrono::seconds(5);
+            StartRpcCapture();
+        }
     }
 
     if (g_context.reset.exchange(false, std::memory_order_acq_rel)) {
@@ -2338,7 +2354,6 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
             }
         }
     }
-    StartRpcCapture();
     g_context.started.store(false, std::memory_order_release);
     g_context.apply_speed.store(false, std::memory_order_release);
     g_context.apply_torque.store(false, std::memory_order_release);
