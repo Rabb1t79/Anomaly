@@ -92,6 +92,9 @@ struct Context {
     std::atomic_bool summon{};
     std::atomic_bool summon_customized{};
     std::atomic_bool summon_server{};
+    // Experimental cross-model transplant: keep the picked module overrides when the
+    // selection moves to the target model, so they can be applied there.
+    bool cross_source_active{};
     std::atomic_bool friction_toggle{};
     std::atomic_bool started{};
     std::atomic_uint32_t durability_last_status_code{ANOMALY_STATUS_V1_NOT_FOUND};
@@ -502,7 +505,7 @@ void RefreshCustomizationCatalogOnGameThread() {
         g_context.customization_options = std::move(options);
         g_context.customization_vehicle_id = selected_id;
         g_context.customization_skin_id = std::move(default_skin);
-        g_context.selected_module_overrides.clear();
+        if (!g_context.cross_source_active) g_context.selected_module_overrides.clear();
         g_context.customization_catalog_tick = after.sequence;
         const auto module_count = std::ranges::count_if(
             g_context.customization_options, [](const CustomizationOption& option) {
@@ -1404,6 +1407,21 @@ void DrawCustomizationDetail(
         "action.server_summon", "Server summon (test)");
     if (DrawButtonEnabled(ui, server_summon_label, has_selected && player_position_valid)) {
         g_context.summon_server.store(true, std::memory_order_release);
+    }
+    // Experimental cross-model transplant: remember this model's modules, then select a
+    // different model and summon it; the remembered module ids are applied there.
+    const auto remember_source_label = g_context.localizer.Text(
+        "action.remember_cross_source", "Use this model's modules as cross-model source");
+    if (DrawButtonEnabled(ui, remember_source_label, has_selected)) {
+        const auto status = g_context.vehicle->RememberCustomizationSource(
+            anomaly::sdk::StringView(selected));
+        {
+            std::scoped_lock lock(g_context.mutex);
+            g_context.cross_source_active = status.code == ANOMALY_STATUS_V1_OK;
+        }
+        SetStatus(StatusDescription(
+            g_context.localizer.Text("status.cross_source_saved", "Cross-model module source"),
+            status));
     }
     const auto reload_label =
         g_context.localizer.Text("action.reload_customization", "Reload customization data");
@@ -2523,6 +2541,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.12.2"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.12.3"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }

@@ -179,6 +179,11 @@ struct Runtime : NativeAccess {
         bool is_default{};
     };
     std::vector<VehicleCustomizationOption> vehicle_customization_options;
+    // Experimental cross-model transplant: the modules of a remembered source model can
+    // be applied to a different vehicle. Kept as a copy because the live catalog cache
+    // only holds the model that was scanned last.
+    std::vector<VehicleCustomizationOption> foreign_module_source;
+    std::string foreign_module_source_id;
     std::string vehicle_customization_vehicle_row_id;
     std::uint64_t vehicle_customization_generation{};
     std::uint64_t vehicle_customization_vehicle_sequence{};
@@ -3166,6 +3171,34 @@ struct Runtime : NativeAccess {
         }
     }
 
+    // Experimental: remember one model's module catalog so its modules can be applied to
+    // a different vehicle. Only module entries are kept; skins stay model-specific.
+    AnomalyStatusV1 RememberCustomizationSource(const AnomalyStringViewV1 vehicle_row_id) {
+        if (vehicle_row_id.data == nullptr || vehicle_row_id.size == 0 ||
+            vehicle_row_id.size >= nte_vehicle::kVehicleIdMaxBytes)
+            return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
+                TextLocalized("backend.invalid_cross_model_source_id_320", "Invalid cross-model source id."));
+        if (GetCurrentThreadId() != game_thread_id.load(std::memory_order_acquire))
+            return Status(ANOMALY_STATUS_V1_CONFLICT,
+                TextLocalized("backend.cross_model_source_requires_the_game_thread_321", "Cross-model source requires the Game thread."));
+        std::scoped_lock lock(mutex);
+        if (!EnsureVehicleCatalogLocked())
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_catalog_failure_reason);
+        const std::string_view requested{vehicle_row_id.data, vehicle_row_id.size};
+        const auto selected = std::ranges::find(vehicle_catalog, requested, &VehicleCatalogEntry::id);
+        if (selected == vehicle_catalog.end())
+            return Status(ANOMALY_STATUS_V1_NOT_FOUND,
+                TextLocalized("backend.cross_model_source_is_not_in_dt_vehicledata_322", "Cross-model source is not in DT_VehicleData."));
+        if (!EnsureVehicleCustomizationCatalogLocked(*selected))
+            return Status(ANOMALY_STATUS_V1_UNAVAILABLE, vehicle_customization_failure_reason);
+        foreign_module_source.clear();
+        for (const auto& option : vehicle_customization_options) {
+            if (option.kind == nte_vehicle::kCustomizationModule) foreign_module_source.push_back(option);
+        }
+        foreign_module_source_id = selected->id;
+        return Status(ANOMALY_STATUS_V1_OK, foreign_module_source_id.c_str());
+    }
+
     [[nodiscard]] bool BuildVehicleConfigurationLocked(
         const VehicleCatalogEntry& selected,
         const nte_vehicle::SummonRequest& request,
@@ -3276,6 +3309,17 @@ struct Runtime : NativeAccess {
                         option.module_type == selection.module_type && option.id == module_id) {
                         selected_module = &option;
                         break;
+                    }
+                }
+                // Experimental: a module of the remembered source model is accepted too.
+                if (selected_module == nullptr) {
+                    for (const auto& option : foreign_module_source) {
+                        if (option.kind == nte_vehicle::kCustomizationModule &&
+                            option.module_type == selection.module_type &&
+                            option.id == module_id) {
+                            selected_module = &option;
+                            break;
+                        }
                     }
                 }
                 if (selected_module == nullptr || selected_module->native_name == 0) {
