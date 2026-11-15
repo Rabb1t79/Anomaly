@@ -2151,6 +2151,119 @@ void Draw(const AnomalyUiServiceV1* ui) {
     }
 }
 
+// Temporary read-only capture of the game's own vehicle summon RPC. It records the exact
+// message type and parameter block the client sends so the multiplayer path can be
+// replayed later; remove together with the capture branch.
+std::atomic<std::uintptr_t> g_rpc_function{};
+std::atomic_bool g_rpc_subscribed{};
+AnomalyGenerationHandleV1 g_rpc_handle{};
+const AnomalyUe5ProcessEventServiceV1* g_rpc_events{};
+std::string g_rpc_log_path;
+
+std::string HexBytes(const std::uint8_t* data, const std::size_t size) {
+    static constexpr char kDigits[] = "0123456789abcdef";
+    std::string text;
+    text.reserve(size * 2U);
+    for (std::size_t index = 0; index < size; ++index) {
+        text.push_back(kDigits[data[index] >> 4U]);
+        text.push_back(kDigits[data[index] & 0x0FU]);
+    }
+    return text;
+}
+
+void ANOMALY_CALL CaptureVehicleRpc(
+    void*, std::uintptr_t object, std::uintptr_t function, void* parameters) {
+    try {
+        if (parameters == nullptr || function == 0 ||
+            function != g_rpc_function.load(std::memory_order_acquire)) return;
+        auto* runtime = nte_vehicle::Backend();
+        if (runtime == nullptr || runtime->memory == nullptr || g_rpc_log_path.empty()) return;
+        std::uint16_t parms_size{};
+        if (!nte_vehicle::ReadValue(*runtime->memory,
+                function + runtime->layout.ufunction_parmsSize, parms_size) ||
+            parms_size < 0x20) return;
+        auto* base = static_cast<std::uint8_t*>(parameters);
+        std::int32_t msg_type{};
+        std::memcpy(&msg_type, base, sizeof(msg_type));
+        std::uintptr_t wrappers{};
+        std::int32_t count{}, capacity{};
+        std::memcpy(&wrappers, base + 0x08, sizeof(wrappers));
+        std::memcpy(&count, base + 0x10, sizeof(count));
+        std::memcpy(&capacity, base + 0x14, sizeof(capacity));
+        std::string line = "{\"msg_type\":" + std::to_string(msg_type) +
+            ",\"parms_size\":" + std::to_string(parms_size) +
+            ",\"count\":" + std::to_string(count) + ",\"wrappers\":[";
+        if (wrappers != 0 && count > 0 && count <= 64 && capacity >= count) {
+            for (std::int32_t index = 0; index < count; ++index) {
+                std::array<std::uint8_t, 0x20> wrapper{};
+                if (!runtime->memory->Read(
+                        wrappers + static_cast<std::uintptr_t>(index) * 0x20U,
+                        wrapper.data(), wrapper.size())) break;
+                std::uint8_t type{};
+                std::uint32_t name_comp{}, name_number{};
+                std::memcpy(&type, wrapper.data(), sizeof(type));
+                std::memcpy(&name_comp, wrapper.data() + 4, sizeof(name_comp));
+                std::memcpy(&name_number, wrapper.data() + 8, sizeof(name_number));
+                std::uintptr_t bytes{};
+                std::int32_t byte_count{}, byte_capacity{};
+                std::memcpy(&bytes, wrapper.data() + 0x10, sizeof(bytes));
+                std::memcpy(&byte_count, wrapper.data() + 0x18, sizeof(byte_count));
+                std::memcpy(&byte_capacity, wrapper.data() + 0x1C, sizeof(byte_capacity));
+                std::vector<std::uint8_t> payload;
+                if (bytes != 0 && byte_count > 0 && byte_count <= 4096 &&
+                    byte_capacity >= byte_count) {
+                    payload.resize(static_cast<std::size_t>(byte_count));
+                    if (!runtime->memory->Read(bytes, payload.data(), payload.size())) {
+                        payload.clear();
+                    }
+                }
+                if (index != 0) line += ',';
+                line += "{\"type\":" + std::to_string(type) +
+                    ",\"name_comp\":" + std::to_string(name_comp) +
+                    ",\"name_number\":" + std::to_string(name_number) +
+                    ",\"bytes\":\"" + HexBytes(payload.data(), payload.size()) + "\"}";
+            }
+        }
+        line += "]}";
+        std::ofstream file(g_rpc_log_path, std::ios::binary | std::ios::app);
+        if (file) {
+            file.write(line.data(), static_cast<std::streamsize>(line.size()));
+            file.put('\n');
+        }
+        static_cast<void>(object);
+    } catch (...) {  }
+}
+
+void StartRpcCapture() {
+    auto* runtime = nte_vehicle::Backend();
+    if (runtime == nullptr || runtime->events == nullptr ||
+        runtime->events->subscribe == nullptr || g_context.state_directory.empty()) return;
+    std::uintptr_t function{};
+    if (!runtime->FindExactObjectLocked(
+            L"/Script/HTGame.HTVehicleComponent.ServerVehicleModifyRPC", function) ||
+        function == 0) return;
+    g_rpc_function.store(function, std::memory_order_release);
+    g_rpc_log_path = g_context.state_directory;
+    if (g_rpc_log_path.back() != '\\' && g_rpc_log_path.back() != '/') g_rpc_log_path.push_back('\\');
+    g_rpc_log_path += "vehicle-rpc-capture.jsonl";
+    AnomalyGenerationHandleV1 handle{};
+    if (runtime->events->subscribe(runtime->events->user, CaptureVehicleRpc, nullptr,
+            &handle).code == ANOMALY_STATUS_V1_OK && handle.id != 0) {
+        g_rpc_handle = handle;
+        g_rpc_events = runtime->events;
+        g_rpc_subscribed.store(true, std::memory_order_release);
+    }
+}
+
+void StopRpcCapture() {
+    if (g_rpc_subscribed.exchange(false, std::memory_order_acq_rel) &&
+        g_rpc_events != nullptr && g_rpc_handle.id != 0) {
+        static_cast<void>(g_rpc_events->unsubscribe(g_rpc_events->user, g_rpc_handle));
+        g_rpc_handle = {};
+    }
+    g_rpc_function.store(0, std::memory_order_release);
+}
+
 AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_context) try {
     if (!host || !plugin_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.localizer = anomaly::sdk::Localizer(host);
@@ -2214,6 +2327,7 @@ AnomalyStatusV1 ANOMALY_CALL Load(const AnomalyHostApiV1* host, void** plugin_co
             }
         }
     }
+    StartRpcCapture();
     g_context.started.store(false, std::memory_order_release);
     g_context.apply_speed.store(false, std::memory_order_release);
     g_context.apply_torque.store(false, std::memory_order_release);
@@ -2308,6 +2422,7 @@ AnomalyStatusV1 ANOMALY_CALL Stop(void* plugin_context, std::uint32_t) try {
     if (plugin_context != &g_context) return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT);
     g_context.started.store(false, std::memory_order_release);
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    StopRpcCapture();
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
     ReleaseMenuHotkey(g_context);
@@ -2326,6 +2441,7 @@ void ANOMALY_CALL Unload(void* plugin_context) try {
     if (plugin_context != &g_context) return;
     g_context.started.store(false, std::memory_order_release);
     g_context.toggle_menu_requested.store(false, std::memory_order_release);
+    StopRpcCapture();
     nte_vehicle::StopBackend();
     SaveSelection(g_context.saved_vehicle_id);
     ReleaseMenuHotkey(g_context);
@@ -2362,6 +2478,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.11.1"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.12.0"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }
