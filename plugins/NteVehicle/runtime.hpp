@@ -4049,6 +4049,26 @@ struct Runtime : NativeAccess {
                     static_cast<void>(ResolveFNameLocked(comparison, number, vehicle_id));
                 }
             }
+            const bool water_pawn = ObjectClassChainContainsLocked(actor, "HTWaterVehicleBasePawn");
+            std::uintptr_t buoyancy{};
+            std::string buoyancy_data;
+            ReflectedPropertyInfo buoyancy_property;
+            if (FindReflectedPropertyLocked(actor_class, "FluxBuoyancyComponent", buoyancy_property, true) &&
+                buoyancy_property.type == "ObjectProperty" && buoyancy_property.offset >= 0 &&
+                ReadValue(*memory, actor + static_cast<std::uintptr_t>(buoyancy_property.offset), buoyancy) &&
+                buoyancy != 0) {
+                std::uintptr_t buoyancy_class{};
+                ReflectedPropertyInfo data_property;
+                if (ReadPointerAt(*memory, buoyancy, layout.object_class, buoyancy_class) &&
+                    FindReflectedPropertyLocked(buoyancy_class, "BuoyancyDataAsset", data_property, true) &&
+                    data_property.type == "ObjectProperty" && data_property.offset >= 0) {
+                    std::uintptr_t asset{};
+                    if (ReadValue(*memory, buoyancy + static_cast<std::uintptr_t>(data_property.offset), asset) &&
+                        asset != 0) {
+                        static_cast<void>(ReadReflectedObjectNameLocked(asset, buoyancy_data));
+                    }
+                }
+            }
             std::string line = "{\"class\":\"" + JsonEscape(class_name) +
                 "\",\"object\":\"" + JsonEscape(object_name) +
                 "\",\"vehicle_id\":\"" + JsonEscape(vehicle_id) +
@@ -4057,7 +4077,10 @@ struct Runtime : NativeAccess {
                 ",\"replicates\":" + std::to_string(replicates) +
                 ",\"owner_class\":\"" + JsonEscape(owner_class) +
                 "\",\"has_owner\":" + (owner != 0 ? "true" : "false") +
-                ",\"has_instigator\":" + (instigator != 0 ? "true" : "false") + "}";
+                ",\"has_instigator\":" + (instigator != 0 ? "true" : "false") +
+                ",\"water_pawn\":" + (water_pawn ? "true" : "false") +
+                ",\"buoyancy\":" + (buoyancy != 0 ? "true" : "false") +
+                ",\"buoyancy_data\":\"" + JsonEscape(buoyancy_data) + "\"}";
             std::string path = diagnostic_directory;
             if (path.back() != '\\' && path.back() != '/') path.push_back('\\');
             path += "vehicle-actor-probe.jsonl";
