@@ -2238,21 +2238,32 @@ void StartRpcCapture() {
     auto* runtime = nte_vehicle::Backend();
     if (runtime == nullptr || runtime->events == nullptr ||
         runtime->events->subscribe == nullptr || g_context.state_directory.empty()) return;
+    std::string marker = g_context.state_directory;
+    if (marker.back() != '\\' && marker.back() != '/') marker.push_back('\\');
+    marker += "vehicle-rpc-capture-armed.txt";
     std::uintptr_t function{};
-    if (!runtime->FindExactObjectLocked(
-            L"/Script/HTGame.HTVehicleComponent.ServerVehicleModifyRPC", function) ||
-        function == 0) return;
-    g_rpc_function.store(function, std::memory_order_release);
-    g_rpc_log_path = g_context.state_directory;
-    if (g_rpc_log_path.back() != '\\' && g_rpc_log_path.back() != '/') g_rpc_log_path.push_back('\\');
-    g_rpc_log_path += "vehicle-rpc-capture.jsonl";
-    AnomalyGenerationHandleV1 handle{};
-    if (runtime->events->subscribe(runtime->events->user, CaptureVehicleRpc, nullptr,
-            &handle).code == ANOMALY_STATUS_V1_OK && handle.id != 0) {
-        g_rpc_handle = handle;
-        g_rpc_events = runtime->events;
-        g_rpc_subscribed.store(true, std::memory_order_release);
+    const bool resolved = runtime->FindExactObjectLocked(
+        L"/Script/HTGame.HTVehicleComponent.ServerVehicleModifyRPC", function) && function != 0;
+    std::string report = resolved ? "resolved" : "function-not-found";
+    if (resolved) {
+        g_rpc_function.store(function, std::memory_order_release);
+        g_rpc_log_path = g_context.state_directory;
+        if (g_rpc_log_path.back() != '\\' && g_rpc_log_path.back() != '/')
+            g_rpc_log_path.push_back('\\');
+        g_rpc_log_path += "vehicle-rpc-capture.jsonl";
+        AnomalyGenerationHandleV1 handle{};
+        const auto status = runtime->events->subscribe(runtime->events->user,
+            CaptureVehicleRpc, nullptr, &handle);
+        report += status.code == ANOMALY_STATUS_V1_OK && handle.id != 0
+            ? " subscribed" : " subscribe-failed";
+        if (status.code == ANOMALY_STATUS_V1_OK && handle.id != 0) {
+            g_rpc_handle = handle;
+            g_rpc_events = runtime->events;
+            g_rpc_subscribed.store(true, std::memory_order_release);
+        }
     }
+    std::ofstream file(marker, std::ios::binary | std::ios::trunc);
+    if (file) file << report << '\n';
 }
 
 void StopRpcCapture() {
