@@ -184,6 +184,9 @@ struct Runtime : NativeAccess {
     // only holds the model that was scanned last.
     std::vector<VehicleCustomizationOption> foreign_module_source;
     std::string foreign_module_source_id;
+    // Skin of the remembered source model, reused when a foreign model is summoned.
+    std::string foreign_skin_id;
+    std::uint64_t foreign_skin_native_name{};
     std::string vehicle_customization_vehicle_row_id;
     std::uint64_t vehicle_customization_generation{};
     std::uint64_t vehicle_customization_vehicle_sequence{};
@@ -3173,7 +3176,8 @@ struct Runtime : NativeAccess {
 
     // Experimental: remember one model's module catalog so its modules can be applied to
     // a different vehicle. Only module entries are kept; skins stay model-specific.
-    AnomalyStatusV1 RememberCustomizationSource(const AnomalyStringViewV1 vehicle_row_id) {
+    AnomalyStatusV1 RememberCustomizationSource(const AnomalyStringViewV1 vehicle_row_id,
+        const AnomalyStringViewV1 source_skin_id) {
         if (vehicle_row_id.data == nullptr || vehicle_row_id.size == 0 ||
             vehicle_row_id.size >= nte_vehicle::kVehicleIdMaxBytes)
             return Status(ANOMALY_STATUS_V1_INVALID_ARGUMENT,
@@ -3194,6 +3198,20 @@ struct Runtime : NativeAccess {
         foreign_module_source.clear();
         for (const auto& option : vehicle_customization_options) {
             if (option.kind == nte_vehicle::kCustomizationModule) foreign_module_source.push_back(option);
+        }
+        foreign_skin_id.clear();
+        foreign_skin_native_name = 0;
+        if (source_skin_id.data != nullptr && source_skin_id.size != 0 &&
+            source_skin_id.size < nte_vehicle::kVehicleIdMaxBytes) {
+            const std::string_view requested_skin{source_skin_id.data, source_skin_id.size};
+            for (const auto& option : vehicle_customization_options) {
+                if (option.kind == nte_vehicle::kCustomizationSkin &&
+                    option.id == requested_skin) {
+                    foreign_skin_id = option.id;
+                    foreign_skin_native_name = option.native_name;
+                    break;
+                }
+            }
         }
         foreign_module_source_id = selected->id;
         return Status(ANOMALY_STATUS_V1_OK, foreign_module_source_id.c_str());
@@ -3225,6 +3243,7 @@ struct Runtime : NativeAccess {
                 (static_cast<std::uint64_t>(selected.vehicle_id_number) << 32U);
 
             const VehicleCustomizationOption* selected_skin{};
+            bool foreign_skin_selected{};
             if (request.skin_id.data != nullptr && request.skin_id.size != 0) {
                 if (request.skin_id.size >= nte_vehicle::kVehicleIdMaxBytes) {
                     failure = TextLocalized("backend.skin_id_too_long", "Skin ID exceeds the supported length.");
@@ -3238,7 +3257,11 @@ struct Runtime : NativeAccess {
                         break;
                     }
                 }
-                if (selected_skin == nullptr) {
+                if (selected_skin == nullptr &&
+                    foreign_skin_native_name != 0 && requested_skin == foreign_skin_id) {
+                    // Experimental: the remembered source model's skin is applied to this model.
+                    foreign_skin_selected = true;
+                } else if (selected_skin == nullptr) {
                     failure = TextLocalized("backend.the_selected_skin_does_not_belong_to_203", "The selected skin does not belong to this vehicle model.");
                     return false;
                 }
@@ -3260,7 +3283,8 @@ struct Runtime : NativeAccess {
             }
             // Models without skin rows use FName None in the module update, as the
             // game's unskinned configuration does. They need no material override.
-            build.skin_id = selected_skin != nullptr ? selected_skin->native_name : 0;
+            build.skin_id = selected_skin != nullptr ? selected_skin->native_name
+                : (foreign_skin_selected ? foreign_skin_native_name : 0);
             if (selected_skin != nullptr && build.skin_id == 0) {
                 failure = TextLocalized("backend.the_selected_skinid_is_none_customization_was_205", "The selected SkinID is None; customization was rejected.");
                 return false;

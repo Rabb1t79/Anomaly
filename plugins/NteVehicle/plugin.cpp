@@ -95,6 +95,7 @@ struct Context {
     // Experimental cross-model transplant: keep the picked module overrides when the
     // selection moves to the target model, so they can be applied there.
     bool cross_source_active{};
+    std::string cross_skin_id;
     std::atomic_bool friction_toggle{};
     std::atomic_bool started{};
     std::atomic_uint32_t durability_last_status_code{ANOMALY_STATUS_V1_NOT_FOUND};
@@ -504,7 +505,11 @@ void RefreshCustomizationCatalogOnGameThread() {
         if (selected_id != g_context.selected_vehicle_id) return;
         g_context.customization_options = std::move(options);
         g_context.customization_vehicle_id = selected_id;
-        g_context.customization_skin_id = std::move(default_skin);
+        if (g_context.cross_source_active && !g_context.cross_skin_id.empty()) {
+            g_context.customization_skin_id = g_context.cross_skin_id;
+        } else {
+            g_context.customization_skin_id = std::move(default_skin);
+        }
         if (!g_context.cross_source_active) g_context.selected_module_overrides.clear();
         g_context.customization_catalog_tick = after.sequence;
         const auto module_count = std::ranges::count_if(
@@ -881,7 +886,7 @@ void Update() {
 
         std::string validation_error;
         if (summon_customized_requested) {
-            if (customization_vehicle_id != selected_id) {
+            if (customization_vehicle_id != selected_id && !g_context.cross_source_active) {
                 validation_error = g_context.localizer.Text(
                     "status.customization_vehicle_mismatch",
                     "Customized summon failed: the customization list does not match the selected vehicle, reopen the list.");
@@ -1413,11 +1418,17 @@ void DrawCustomizationDetail(
     const auto remember_source_label = g_context.localizer.Text(
         "action.remember_cross_source", "Use this model's modules as cross-model source");
     if (DrawButtonEnabled(ui, remember_source_label, has_selected)) {
+        std::string source_skin;
+        {
+            std::scoped_lock lock(g_context.mutex);
+            source_skin = g_context.customization_skin_id;
+        }
         const auto status = g_context.vehicle->RememberCustomizationSource(
-            anomaly::sdk::StringView(selected));
+            anomaly::sdk::StringView(selected), anomaly::sdk::StringView(source_skin));
         {
             std::scoped_lock lock(g_context.mutex);
             g_context.cross_source_active = status.code == ANOMALY_STATUS_V1_OK;
+            if (g_context.cross_source_active) g_context.cross_skin_id = std::move(source_skin);
         }
         SetStatus(StatusDescription(
             g_context.localizer.Text("status.cross_source_saved", "Cross-model module source"),
@@ -1671,7 +1682,7 @@ void DrawCustomizationDetail(
     }
 
     const bool can_summon_customized = has_selected && player_position_valid &&
-        customization_vehicle_id == selected && !options.empty();
+        (customization_vehicle_id == selected || g_context.cross_source_active) && !options.empty();
     const auto summon_customized_label =
         g_context.localizer.Text("action.summon_customized", "Summon customized vehicle");
     if (draw_wide_enabled_button(summon_customized_label, can_summon_customized, section_width)) {
@@ -2541,6 +2552,6 @@ ANOMALY_SDK_EXPORT AnomalyStatusV1 ANOMALY_CALL AnomalyPluginEntryV1(
         sizeof(*descriptor), ANOMALY_PLUGIN_API_V1_MAJOR, ANOMALY_PLUGIN_API_V1_MINOR,
         anomaly::sdk::StringView("anomaly.nte-vehicle"),
         anomaly::sdk::StringView("Vehicle Control"), anomaly::sdk::StringView("Anomaly"),
-        anomaly::sdk::StringView("0.12.3"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
+        anomaly::sdk::StringView("0.12.4"), Load, Start, Stop, Unload, UpdateCallback, DrawCallback};
     return anomaly::sdk::Ok();
 }
